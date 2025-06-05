@@ -322,4 +322,66 @@ def generate_qna_pair_helper(content):
                 processed = True
                 
     return json.loads(out_str)
+
+def generate_hierarchical_summary(content):
+    """
+    Generates a hierarchical summary of document content using Azure OpenAI.
     
+    Args:
+        content (str): The document content to summarize
+        
+    Returns:
+        dict: A hierarchical summary with high-level, detailed, and section-specific summaries
+    """
+    sys_msg = """You are an expert at creating hierarchical document summaries. Given document content, create a structured summary with:
+    1. An executive summary (2-3 sentences)
+    2. A detailed summary (2-3 paragraphs)
+    3. Key topics/themes
+    4. Main conclusions or takeaways
+    
+    Return the summary as a JSON object with these sections."""
+
+    user_msg = f"""Generate a hierarchical summary of this document content:
+
+    {content}"""
+
+    messages = [
+        {"role": "system", "content": sys_msg},
+        {"role": "user", "content": user_msg}
+    ]
+
+    api_base = os.environ['AOAI_ENDPOINT']
+    api_key = os.environ['AOAI_KEY']
+    deployment_name = os.environ['AOAI_GPT_MODEL']
+
+    base_url = f"{api_base}openai/deployments/{deployment_name}"
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": api_key
+    }
+    endpoint = f"{base_url}/chat/completions?api-version=2023-12-01-preview"
+    data = {
+        "messages": messages,
+        "temperature": 0.3,
+        "top_p": 0.95,
+        "max_tokens": 1000,
+        "response_format": {"type": "json_object"}
+    }
+
+    processed = False
+    while not processed:
+        try:
+            response = requests.post(endpoint, headers=headers, data=json.dumps(data))
+            if response.status_code == 429:
+                time.sleep(5)
+                continue
+            summary = response.json()['choices'][0]['message']['content']
+            processed = True
+        except Exception as e:
+            if 'exceeded token rate' in str(e).lower():
+                time.sleep(5)
+            else:
+                logging.error(f"Error generating summary: {str(e)}")
+                raise e
+
+    return json.loads(summary)

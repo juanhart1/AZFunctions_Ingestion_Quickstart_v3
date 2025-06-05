@@ -23,14 +23,61 @@ from azure.mgmt.datafactory import DataFactoryManagementClient
 from azure.mgmt.datafactory.models import TriggerResource
 
 from doc_intelligence_utilities import analyze_pdf, extract_results
-from aoai_utilities import generate_embeddings, classify_image, analyze_image, get_transcription, generate_qna_pair_helper
+from aoai_utilities import generate_embeddings, classify_image, analyze_image, get_transcription, generate_qna_pair_helper, generate_hierarchical_summary
 from ai_search_utilities import create_vector_index, get_current_index, insert_documents_vector, delete_documents_vector, get_ids_from_all_docs
 from chunking_utils import create_chunks, split_text, create_semantic_chunks
+from activities import generate_document_summary
 import tempfile
 import subprocess
 
 app = df.DFApp(http_auth_level=func.AuthLevel.FUNCTION)
 
+@app.activity_trigger(input_name="activitypayload")
+def generate_document_summary_activity(activitypayload: str):
+    """
+    Activity trigger for generating document summaries.
+    
+    Args:
+        activitypayload (str): JSON string containing doc_intel_formatted_results_container,
+                              summary_container, and file information
+        
+    Returns:
+        str: Path to the generated summary file
+    """
+    # Parse the activity payload
+    data = json.loads(activitypayload)
+    doc_intel_formatted_results_container = data.get("doc_intel_formatted_results_container")
+    summary_container = data.get("summary_container")
+    file = data.get("file")
+    
+    # Create a BlobServiceClient
+    blob_service_client = BlobServiceClient.from_connection_string(os.environ['STORAGE_CONN_STR'])
+    
+    # Get container clients
+    doc_intel_container_client = blob_service_client.get_container_client(doc_intel_formatted_results_container)
+    summary_container_client = blob_service_client.get_container_client(summary_container)
+    
+    # Get document content
+    extract_blob_client = doc_intel_container_client.get_blob_client(file)
+    extract_data = json.loads(extract_blob_client.download_blob().readall())
+    
+    # Generate summary using the utility function - use 'content' instead of 'text'
+    summary = generate_hierarchical_summary(extract_data['content'])
+    
+    # Create summary record
+    summary_record = {
+        'id': extract_data['id'],
+        'sourcefile': extract_data['sourcefile'],
+        'sourcepage': extract_data.get('sourcepage', ''),
+        'summary': summary,
+        'generated_date': datetime.now().isoformat()
+    }
+    
+    # Upload summary
+    summary_blob_client = summary_container_client.get_blob_client(file)
+    summary_blob_client.upload_blob(json.dumps(summary_record), overwrite=True)
+    
+    return file
 
 # An HTTP-Triggered Function with a Durable Functions Client binding
 @app.route(route="orchestrators/{functionName}")
@@ -315,6 +362,7 @@ def pdf_orchestrator(context):
     doc_intel_results_container = f'{source_container}-doc-intel-results'
     doc_intel_formatted_results_container = f'{source_container}-doc-intel-formatted-results'
     image_analysis_results_container = f'{source_container}-image-analysis-results'
+    summaries_container = f'{source_container}-summaries'
 
     # Confirm that all storage locations exist to support document ingestion
     try:
@@ -425,6 +473,36 @@ def pdf_orchestrator(context):
     status_record['status'] = 1
     if cosmos_logging:
         yield context.call_activity("update_status_record", json.dumps({** status_record, **{'time_key': 'time_02_extraction'}}))
+
+    # Generate hierarchical summaries for each document 
+    try:
+        summary_tasks = []
+        for pdf in pdf_pages:
+            summary_tasks.append(context.call_activity("generate_document_summary_activity", json.dumps({
+                'doc_intel_formatted_results_container': doc_intel_formatted_results_container,
+                'summary_container': summaries_container,
+                'file': pdf['child'].replace('.pdf', '.json')
+            })))
+        # Execute all summary tasks and get results 
+        summary_files = yield context.task_all(summary_tasks)
+
+    except Exception as e:
+        context.set_custom_status('Ingestion Failed During Summary Generation')
+        status_record['status'] = -1
+        status_record['status_message'] = 'Ingestion Failed During Summary Generation'
+        status_record['error_message'] = str(e)
+        status_record['processing_progress'] = 0.0
+        if cosmos_logging:
+            yield context.call_activity("update_status_record", json.dumps(status_record))
+        logging.error(e)
+        raise e
+
+    context.set_custom_status('Summary Generation Completed')
+    status_record['status_message'] = 'Summary Generation Completed'
+    status_record['processing_progress'] = 0.65
+    status_record['status'] = 1
+    if cosmos_logging:
+        yield context.call_activity("update_status_record", json.dumps({** status_record, **{'time_key': 'time_03_summarization'}}))
 
     #Analyze all pages and determine if there is additional visual content that should be described
     try:
@@ -954,7 +1032,7 @@ def audio_video_orchestrator(context):
     status_record['indexed_documents'] = insert_results
     status_record['index_name'] = latest_index
     if cosmos_logging:
-        yield context.call_activity("update_status_record", json.dumps(status_record))
+        yield context.call_activity("update_status_record", json.dumps({** status_record, **{'time_key': 'time_07_completion'}}))
 
     # Return the list of parent files and processed documents as a JSON string
     return json.dumps({'parent_files': parent_files, 'processed_documents': processed_documents, 'indexed_documents': insert_results, 'index_name': latest_index})
@@ -1033,10 +1111,11 @@ def non_pdf_orchestrator(context):
         status_record['chunking_strategy'] = chunking_strategy
         status_record['max_chunk_size'] = max_chunk_size
         status_record['chunk_overlap'] = chunk_overlap
-        status_record['embedding_model'] = embedding_model
-        status_record['id'] = cosmos_record_id
         status_record['entra_id'] = entra_id
         status_record['session_id'] = session_id
+        status_record['embedding_model'] = embedding_model
+        status_record['cosmos_logging'] = cosmos_logging 
+        status_record['id'] = cosmos_record_id
         status_record['status'] = 1
         status_record['status_message'] = 'Starting Ingestion Process'
         status_record['processing_progress'] = 0.1
@@ -1603,7 +1682,7 @@ def split_pdf_files(activitypayload: str):
     pages_container = blob_service_client.get_container_client(pages_container)
 
     # Get a BlobClient object for the PDF file
-    pdf_blob_client = source_container.get_blob_client(file)
+    pdf_blob_client = source_container.get_blob_client(blob=file)
 
     # Initialize an empty list to store the PDF chunks
     pdf_chunks = []
@@ -2078,7 +2157,6 @@ def chunk_extracts(activitypayload: str):
             final_extract_blob_client = extract_container_client.get_blob_client(blob=filename)
             final_extract_blob_client.upload_blob(json.dumps(chunk), overwrite=True)
             out_files.append(filename)
-
     elif chunking_strategy=='semantic':
         chunks_content_dict = {}
         for file in extracted_files:
@@ -2159,8 +2237,6 @@ def chunk_audio_video_transcripts(activitypayload: str):
     chunk_overlap = data.get("chunk_overlap")
 
     prefix = parent.split('.')[0]
-
-
     # Create a BlobServiceClient object which will be used to create a container client
     blob_service_client = BlobServiceClient.from_connection_string(os.environ['STORAGE_CONN_STR'])
 
