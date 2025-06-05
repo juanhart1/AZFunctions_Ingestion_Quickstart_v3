@@ -7,17 +7,20 @@ from azure.search.documents.indexes.models import (
     SimpleField,
     SearchableField,
     SearchField,
-    SearchField,  
-    VectorSearch,  
-    HnswAlgorithmConfiguration, 
-    VectorSearchProfile
+    VectorSearch,
+    SearchField
 )
 import os
 from datetime import datetime
 import requests
 import json
-# from azure.search.documents.indexes.models import HnswAlgorithmConfiguration
 
+import logging, sys
+logging.basicConfig(stream=sys.stdout, level="DEBUG")
+logging.getLogger("azure").setLevel("DEBUG")
+
+API_VER = "2024-03-01-preview"
+    
 def get_current_index(index_stem_name):
     """
     Retrieves existing Azure AI search indexes (based on a provided prefix) and returns the 
@@ -30,10 +33,14 @@ def get_current_index(index_stem_name):
     search_key = os.environ['SEARCH_KEY']
     search_endpoint = os.environ['SEARCH_ENDPOINT']
     search_service_name = os.environ['SEARCH_SERVICE_NAME']
-    
+        
     # Connect to Azure Cognitive Search resource using the provided key and endpoint
     credential = AzureKeyCredential(search_key)
-    client = SearchIndexClient(endpoint=search_endpoint, credential=credential)
+    client = SearchIndexClient(
+        api_version=API_VER,
+        credential=credential,
+        endpoint=search_endpoint, 
+    )
     
     # List all indexes in the search service
     indexes = client.list_index_names()
@@ -77,7 +84,7 @@ def get_index_fields(index_name):
     
     # Connect to Azure Cognitive Search resource using the provided key and endpoint
     credential = AzureKeyCredential(search_key)
-    client = SearchIndexClient(endpoint=search_endpoint, credential=credential)
+    client = SearchIndexClient(endpoint=search_endpoint, credential=credential, api_version=API_VER)
     
 
     # Get the index details
@@ -103,7 +110,7 @@ def delete_indexes(index_stem_name, age_in_minutes=60):
     
     # Connect to Azure Cognitive Search resource using the provided key and endpoint
     credential = AzureKeyCredential(search_key)
-    client = SearchIndexClient(endpoint=search_endpoint, credential=credential)
+    client = SearchIndexClient(endpoint=search_endpoint, credential=credential, api_version=API_VER,)
     
     # List all indexes in the search service
     indexes = client.list_index_names()
@@ -204,7 +211,7 @@ def create_vector_index(stem_name, user_fields, omit_timestamp=False, dimensions
 
     # Create a SearchIndexClient object
     credential = AzureKeyCredential(search_key)
-    client = SearchIndexClient(endpoint=search_endpoint, credential=credential)
+    client = SearchIndexClient(endpoint=search_endpoint, credential=credential, api_version=API_VER,)
 
     # Define the fields for the index
     fields = [SimpleField(name="id", type=SearchFieldDataType.String, key=True), SimpleField(name="sourcefileref", type=SearchFieldDataType.String,searchable=False, filterable=True)]
@@ -227,22 +234,47 @@ def create_vector_index(stem_name, user_fields, omit_timestamp=False, dimensions
     else:
         vector_dimensions = os.environ.get('AOAI_EMBEDDINGS_DIMENSIONS')
 
-    # Add a field for vector embeddings
-    fields = fields + [ SearchField(name="embeddings", type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-                    searchable=True, vector_search_dimensions=vector_dimensions, vector_search_profile_name="vector-config")]
-    
-    # Define vector search configurations
-    vector_search = VectorSearch(
-        algorithms=[
-            HnswAlgorithmConfiguration(
-                name="algorithm-config",
-            )
-        ],
-        profiles=[VectorSearchProfile(name="vector-config", algorithm_configuration_name="algorithm-config")],
-    )
+    # Create vector search configuration
+    # vector_search = VectorSearch(
+    #     algorithm_configurations=[
+    #         HnswVectorSearchAlgorithmConfiguration(
+    #             name=vector_algorithm_name,  # Use the consistent name
+    #             kind="hnsw",
+    #             parameters={
+    #                 "m": 4,
+    #                 "efConstruction": 400,
+    #                 "efSearch": 500,
+    #                 "metric": "cosine"
+    #             }
+    #         )
+    #     ],
+    #     profiles=[
+    #         {
+    #             "name": vector_profile_name,
+    #             "algorithm": vector_algorithm_name
+    #         }
+    #     ]
+    # )
 
-    # Create the search index with the specified fields and vector search configuration
-    index = SearchIndex(name=index_name, fields=fields, vector_search=vector_search)
+    # Add vector embeddings field with correct Collection type and dimensions
+    vector_field = SearchField(
+        name="embeddings",
+        type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
+        vector_search_dimensions=dimensions,
+        vector_search_profile_name=vector_profile_name, # Use the same name here
+        searchable=True,
+        filterable=False,
+        sortable=False,
+        facetable=False
+    )
+    fields.append(vector_field)
+
+    # Create the search index with the specified fields
+    index = SearchIndex(
+        name=index_name,
+        fields=fields,
+        vector_search=vector_search
+    )
     result = client.create_or_update_index(index)
 
     return result.name

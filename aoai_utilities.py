@@ -28,7 +28,7 @@ def generate_embeddings(text, model_name=None):
     openai.api_key = os.environ['AOAI_KEY']
 
     client = AzureOpenAI(
-        azure_endpoint=os.environ['AOAI_ENDPOINT'], api_key=os.environ['AOAI_KEY'], api_version="2023-03-15-preview"
+        azure_endpoint=os.environ['AOAI_ENDPOINT'], api_key=os.environ['AOAI_KEY'], api_version="2024-05-01-preview"
     )
 
     embedding_model = os.environ['AOAI_EMBEDDINGS_MODEL']

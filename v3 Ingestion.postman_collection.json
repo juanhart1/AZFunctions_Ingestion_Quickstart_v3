@@ -183,7 +183,40 @@
 				"header": [],
 				"body": {
 					"mode": "raw",
-					"raw": "{\r\n    \"index_stem_name\": \"test-index\",\r\n    \"fields\": {\"content\": \"string\", \"pagenumber\": \"int\", \"sourcefile\": \"string\", \r\n    \"sourcepage\": \"string\", \"category\": \"string\", \"entra_id\": \"string\", \"session_id\": \"string\"\r\n    },\r\n    \"dimensions\": 3072\r\n}",
+					"raw": "{\r\n    \"index_stem_name\": \"test-index\",\r\n    \"fields\": {\r\n        \"content\": \"string\",\r\n        \"pagenumber\": \"int\",\r\n        \"sourcefile\": \"string\",\r\n        \"sourcepage\": \"string\",\r\n        \"category\": \"string\",\r\n        \"entra_id\": \"string\",\r\n        \"session_id\": \"string\"\r\n    },\r\n    \"dimensions\": 3072\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{FUNCTION_URI}}/api/create_new_index?code={{FUNCTION_KEY}}",
+					"host": [
+						"{{FUNCTION_URI}}"
+					],
+					"path": [
+						"api",
+						"create_new_index"
+					],
+					"query": [
+						{
+							"key": "code",
+							"value": "{{FUNCTION_KEY}}"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Create Transcription Index",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"index_stem_name\": \"transcripts-index\",\r\n    \"fields\": {\r\n        \"content\": \"string\",\r\n        \"sourcefile\": \"string\",\r\n        \"category\": \"string\",\r\n        \"chunkcount\": \"int\",\r\n        \"sourcefileref\": \"string\",\r\n        \"id\": \"string\",\r\n        \"entra_id\": \"string\",\r\n        \"session_id\": \"string\"\r\n    },\r\n    \"dimensions\": 3072\r\n}",
 					"options": {
 						"raw": {
 							"language": "json"
