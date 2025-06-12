@@ -486,6 +486,26 @@ def pdf_orchestrator(context):
         # Execute all summary tasks and get results 
         summary_files = yield context.task_all(summary_tasks)
 
+        # Now generate document-level summaries for each parent document
+        doc_summary_tasks = []
+        # Group pages by parent document
+        parent_docs = {}
+        for pdf in pdf_pages:
+            parent = pdf['parent']
+            if parent not in parent_docs:
+                parent_docs[parent] = []
+            parent_docs[parent].append(pdf['child'])
+
+        # Create document-level summary for each parent
+        for parent_file in parent_docs.keys():
+            doc_summary_tasks.append(context.call_activity("generate_document_level_summary_activity", json.dumps({
+                'source_container': source_container,
+                'summary_container': summaries_container,
+                'parent_file': parent_file
+            })))
+        # Execute all document summary tasks
+        document_summary_files = yield context.task_all(doc_summary_tasks)
+
     except Exception as e:
         context.set_custom_status('Ingestion Failed During Summary Generation')
         status_record['status'] = -1
@@ -698,7 +718,15 @@ def audio_video_orchestrator(context):
     Orchestrates the processing of audio/video files for ingestion, analysis, and indexing.  
   
     This function handles the entire workflow of processing PDF files, including:  
-    ...
+    - Retrieving and validating input data from the context.  
+    - Creating and updating status records in CosmosDB.  
+    - Splitting PDF files into single-page chunks.  
+    - Processing PDF chunks with Document Intelligence.  
+    - Analyzing pages for embedded visuals if specified.  
+    - Chunking extracts based on user specifications.  
+    - Generating embeddings for extracted PDF files.  
+    - Indexing the processed documents.  
+    - Optionally deleting intermediate data.  
   
     Parameters:  
     - context (DurableOrchestrationContext): The context object provided by the Durable Functions runtime.
@@ -2445,10 +2473,10 @@ def upsert_record(activitypayload: str):
     blob_service_client = BlobServiceClient.from_connection_string(os.environ['STORAGE_CONN_STR'])
 
     # Get a ContainerClient object for the extracts container
-    container_client = blob_service_client.get_container_client(container=extracts_container)
+    container = blob_service_client.get_container_client(container=extracts_container)
 
     # Get a BlobClient object for the file
-    blob_client = container_client.get_blob_client(blob=file)
+    blob_client = container.get_blob_client(blob=file)
 
     # Download the file as a string
     file_data = (blob_client.download_blob().readall()).decode('utf-8')
@@ -2581,296 +2609,6 @@ def convert_pdf_activity(activitypayload: str):
 
     return json.dumps({'container': container, 'filename': updated_filename})
 
-@app.activity_trigger(input_name="activitypayload")
-def get_orchestration_path(activitypayload: str):
-
-    data = json.loads(activitypayload)
-    container = data.get("container")
-    file = data.get("file")
-
-    blob_service_client = BlobServiceClient.from_connection_string(os.environ['STORAGE_CONN_STR'])
-    container_client = blob_service_client.get_container_client(container=container)
-
-    blob_client = container_client.get_blob_client(blob=file)
-    blob_data = blob_client.download_blob().readall()
-
-    kind = filetype.guess(blob_data)
-    if not kind:
-        return {'file': file, 'orchestrator': 'non_pdf_orchestrator'}
-    else:
-        if kind.EXTENSION == 'pdf':
-            return {'file': file, 'orchestrator': 'pdf_orchestrator'}
-        elif kind.EXTENSION.lower() in ['mp3', 'mp4', 'mpweg', 'mpga', 'm4a', 'wav', 'webm']:
-            return {'file': file, 'orchestrator': 'audio_video_orchestrator'}
-        else:
-            return {'file': file, 'orchestrator': 'non_pdf_orchestrator'}
-
-
-# Standalone Functions
-
-# This function creates a new index
-@app.route(route="create_new_index", auth_level=func.AuthLevel.FUNCTION)
-def create_new_index(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('Python HTTP trigger function processed a request.')
-
-    # Get the JSON payload from the request
-    data = req.get_json()
-    # Extract the index stem name and fields from the payload
-    stem_name = data.get("index_stem_name")
-    fields = data.get("fields")
-    description = data.get("description")
-    omit_timestamp = data.get("omit_timestamp")
-    dimensions = data.get("dimensions")
-
-    # fields = {
-    #     "content": "string", "pagenumber": "int", "sourcefile": "string", "sourcepage": "string", "category": "string"
-    # }
-
-    # Call the function to create a vector index with the specified stem name and fields
-    response = create_vector_index(stem_name, fields, omit_timestamp, dimensions)
-
-    # Return the response
-    return response
-
-
-@app.route(route="get_active_index", auth_level=func.AuthLevel.FUNCTION)
-def get_active_index(req: func.HttpRequest) -> func.HttpResponse:
-    # Get the JSON payload from the request
-    data = req.get_json()
-    # Extract the index stem name from the payload
-    stem_name = data.get("index_stem_name")
-    
-    # Call the function to get the current index for the specified stem name
-    latest_index, fields = get_current_index(stem_name)
-
-    return latest_index
-
-@app.activity_trigger(input_name="activitypayload")
-def update_status_record(activitypayload: str):
-
-    # Load the activity payload as a JSON string
-    data = json.loads(activitypayload)
-    try:
-        if 'time_key' in data.keys():
-            data[data['time_key']] = datetime.now().isoformat()
-            del data['time_key']
-    except Exception as e:
-        pass
-    cosmos_container = os.environ['COSMOS_CONTAINER']
-    cosmos_database = os.environ['COSMOS_DATABASE']
-    cosmos_endpoint = os.environ['COSMOS_ENDPOINT']
-    cosmos_key = os.environ['COSMOS_KEY']
-
-    client = CosmosClient(cosmos_endpoint, cosmos_key)
-
-    # Select the database
-    database = client.get_database_client(cosmos_database)
-
-    # Select the container
-    container = database.get_container_client(cosmos_container)
-
-    try:
-        existing_item = container.read_item(item=data['id'], partition_key=data['id'])
-        existing_item.update(data)
-        response = container.upsert_item(existing_item)
-    except Exception as e:
-
-        response = container.upsert_item(data)
-    return True
-
-@app.activity_trigger(input_name="activitypayload")
-def create_status_record(activitypayload: str):
-
-    # Load the activity payload as a JSON string
-    data = json.loads(activitypayload)
-    cosmos_id = data.get("cosmos_id")
-    cosmos_container = os.environ['COSMOS_CONTAINER']
-    cosmos_database = os.environ['COSMOS_DATABASE']
-    cosmos_endpoint = os.environ['COSMOS_ENDPOINT']
-    cosmos_key = os.environ['COSMOS_KEY']
-
-    data['id'] = cosmos_id
-
-    client = CosmosClient(cosmos_endpoint, cosmos_key)
-
-    # Select the database
-    database = client.get_database_client(cosmos_database)
-
-    # Select the container
-    container = database.get_container_client(cosmos_container)
-
-    # response = container.read_item(item=cosmos_id)
-    response = container.create_item(data)
-    if type(response) == dict:
-        return response
-    return json.loads(response)
-
-@app.activity_trigger(input_name="activitypayload")
-def enrich_extract_metadata(activitypayload: str):
-
-    # Load the activity payload as a JSON string
-    data = json.loads(activitypayload)
-    file = data.get("file")
-    extract_container = data.get("extract_container")
-    metadata_container = data.get("metadata_container")
-    mapping = data.get("mapping")
-    overwrite = data.get("overwrite")
-
-    # Create a BlobServiceClient object which will be used to create a container client
-    blob_service_client = BlobServiceClient.from_connection_string(os.environ['STORAGE_CONN_STR'])
-
-    extract_container_client = blob_service_client.get_container_client(extract_container)
-    metadata_container_client = blob_service_client.get_container_client(metadata_container)
-
-    # Get a BlobClient object for the extract file
-
-    extract_blob_client = extract_container_client.get_blob_client(blob=file)
-
-    # Load the extract file as a JSON string
-    extract_data = json.loads((extract_blob_client.download_blob().readall()).decode('utf-8'))
-
-    # Get the source file name
-    source_file = extract_data['sourcefile']
-
-    return_record = {'file': file, 'added_attributes': []}
-
-    if source_file in mapping.keys():
-        metadata_file = mapping[source_file]
-
-        metadata_blob_client = metadata_container_client.get_blob_client(blob=metadata_file)
-
-        metadata = json.loads(metadata_blob_client.download_blob().readall())
-
-        for k,v in metadata.items():
-            if k not in extract_data.keys() or overwrite:
-                extract_data[k] = v
-                return_record['added_attributes'].append(k)
-        
-        extract_blob_client.upload_blob(json.dumps(extract_data), overwrite=True)
-    
-    return return_record
-
-def create_profile_record(data):
-    cosmos_container = os.environ['COSMOS_PROFILE_CONTAINER']
-    cosmos_database = os.environ['COSMOS_DATABASE']
-    cosmos_endpoint = os.environ['COSMOS_ENDPOINT']
-    cosmos_key = os.environ['COSMOS_KEY']
-
-    client = CosmosClient(cosmos_endpoint, cosmos_key)
-
-    # Select the database
-    database = client.get_database_client(cosmos_database)
-
-    # Select the container
-    container = database.get_container_client(cosmos_container)
-
-    # response = container.read_item(item=cosmos_id)
-    response = container.create_item(data)
-    if type(response) == dict:
-        return response
-
-@app.activity_trigger(input_name="activitypayload")
-def update_profile_record(activitypayload: str):
-
-    data = json.loads(activitypayload)
-    index_name = data.get("index_name")
-    contains_data = data.get("contains_data")
-
-    cosmos_container = os.environ['COSMOS_PROFILE_CONTAINER']
-    cosmos_database = os.environ['COSMOS_DATABASE']
-    cosmos_endpoint = os.environ['COSMOS_ENDPOINT']
-    cosmos_key = os.environ['COSMOS_KEY']
-
-    client = CosmosClient(cosmos_endpoint, cosmos_key)
-
-    # Select the database
-    database = client.get_database_client(cosmos_database)
-
-    # Select the container
-    container = database.get_container_client(cosmos_container)
-
-    query = f'select * from c where c.id="{index_name}"'
-
-    response = container.read_item(item=index_name, partition_key=index_name)
-
-    response['contains_data'] = contains_data
-
-    response = container.upsert_item(response)
-
-    return response
-
-def pdf_bytes_to_png_bytes(pdf_bytes, page_number=1):
-    # Load the PDF from a bytes object
-    pdf_stream = io.BytesIO(pdf_bytes)
-    document = pymupdf.open("pdf", pdf_stream)
-
-    # Select the page
-    page = document.load_page(page_number - 1)  # Adjust for zero-based index
-
-    # Render page to an image
-    pix = page.get_pixmap(dpi=200)
-
-    # Convert the PyMuPDF pixmap into a Pillow Image
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-    # Create a BytesIO object for the output PNG
-    png_bytes_io = io.BytesIO()
-
-    # Save the image to the BytesIO object using Pillow
-    img.save(png_bytes_io, "PNG")
-
-
-    # Rewind the BytesIO object to the beginning
-    png_bytes_io.seek(0)
-
-    # Close the document
-    document.close()
-
-    # Return the BytesIO object containing the PNG image
-    return png_bytes_io
-
-@app.route(route="convert_file_to_pdf", auth_level=func.AuthLevel.FUNCTION)
-def convert_file_to_pdf(req: func.HttpRequest) -> func.HttpResponse:
-    # Get the JSON payload from the request
-    data = req.get_json()
-    # Extract the index stem name from the payload
-    container = data.get("container")
-    filename = data.get("filename")
-
-    root_filename, extension = os.path.splitext(filename)
-
-    updated_filename = root_filename + '.pdf'
-
-    # Create a BlobServiceClient object which will be used to create a container client
-    blob_service_client = BlobServiceClient.from_connection_string(os.environ['STORAGE_CONN_STR'])
-
-    # Get a ContainerClient object for the extracts container
-    container_client = blob_service_client.get_container_client(container=container)
-
-    # Get a BlobClient object for the file
-    blob_client = container_client.get_blob_client(blob=filename)
-    metadata = blob_client.get_blob_properties().metadata
-
-    # Retrieve the file as a stream and load the bytes
-    file_bytes = blob_client.download_blob().readall()
-
-    try:
-
-        pdf_bytes = convert_to_pdf_helper(file_bytes)
-
-    except Exception as e:
-        raise Exception(f"An error occurred: {e}")
-
-    # Get a BlobClient object for the converted PDF file
-    pdf_blob_client = container_client.get_blob_client(blob=updated_filename)
-
-    # Upload the PDF file
-    pdf_blob_client.upload_blob(pdf_bytes, overwrite=True)
-    pdf_blob_client.set_blob_metadata(metadata)
-
-    return json.dumps({'container': container, 'filename': updated_filename})
-
-import time
 def convert_to_pdf_helper(input_bytes, input_extension='.docx', timeout=10):
     """
     Converts a document to PDF using LibreOffice and returns the PDF as a byte string.
@@ -3172,3 +2910,47 @@ def create_update_cosmos_profile(req: func.HttpRequest) -> func.HttpResponse:
         response = container.upsert_item(default_record)
 
     return json.dumps(dict(response))
+
+@app.activity_trigger(input_name="activitypayload")
+def generate_document_level_summary_activity(activitypayload: str):
+    """
+    Generate a document-level summary from all page summaries of a document.
+    """
+    data = json.loads(activitypayload)
+    source_container = data.get("source_container")
+    summary_container = data.get("summary_container")
+    parent_file = data.get("parent_file")
+    
+    # Create filename for document-level summary
+    doc_summary_filename = f"{os.path.splitext(parent_file)[0]}_document_summary.json"
+    
+    # Get all page summaries for this document
+    blob_service_client = BlobServiceClient.from_connection_string(os.environ['STORAGE_CONN_STR'])
+    summary_container_client = blob_service_client.get_container_client(summary_container)
+    
+    page_summaries = []
+    for blob in summary_container_client.list_blobs(name_starts_with=os.path.splitext(parent_file)[0]):
+        if "_document_summary" not in blob.name:  # Skip document summary if it exists
+            blob_client = summary_container_client.get_blob_client(blob.name)
+            summary_data = json.loads(blob_client.download_blob().readall())
+            page_summaries.append(summary_data['summary'])
+    
+    # Generate document-level summary using existing hierarchical summary function
+    doc_summary = generate_hierarchical_summary("\n\n".join(page_summaries))
+    
+    # Create summary record
+    summary_record = {
+        'id': hashlib.sha256(parent_file.encode()).hexdigest(),
+        'sourcefile': parent_file,
+        'summary_type': 'document',
+        'summary': doc_summary,
+        'page_summaries': page_summaries,
+        'page_count': len(page_summaries),
+        'generated_date': datetime.now().isoformat()
+    }
+    
+    # Upload document summary
+    doc_summary_blob = summary_container_client.get_blob_client(doc_summary_filename)
+    doc_summary_blob.upload_blob(json.dumps(summary_record), overwrite=True)
+    
+    return doc_summary_filename
