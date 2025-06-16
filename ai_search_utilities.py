@@ -21,13 +21,14 @@ logging.getLogger("azure").setLevel("DEBUG")
 
 API_VER = "2024-03-01-preview"
     
-def get_current_index(index_stem_name):
+def get_current_index(index_name_or_stem):
     """
-    Retrieves existing Azure AI search indexes (based on a provided prefix) and returns the 
-    most recently created index to the user by name.
+    Retrieves an Azure AI search index and its fields. Can handle both:
+    1. A full index name
+    2. An index stem name, in which case it returns the most recent timestamped version
 
     Args:
-    index_stem_name (str): The stem of the index name to filter out relevant indexes.
+    index_name_or_stem (str): Either a full index name or the stem of an index name
     """
     # Get the search key, endpoint, and service name from environment variables
     search_key = os.environ['SEARCH_KEY']
@@ -42,26 +43,49 @@ def get_current_index(index_stem_name):
         endpoint=search_endpoint, 
     )
     
+    # First try to get the index directly - it might be a full index name
+    try:
+        index = client.get_index(index_name_or_stem)
+        return index_name_or_stem, [f.name for f in index.fields]
+    except Exception as e:
+        # If direct lookup fails, treat it as a stem and look for timestamped versions
+        print(f"Index {index_name_or_stem} not found directly, searching for timestamped versions...")
+    
     # List all indexes in the search service
     indexes = client.list_index_names()
     
     # Find all indexes starting with the given stem name
-    matching_indexes = [i for i in indexes if i.startswith(index_stem_name)]
-    print(matching_indexes)
+    matching_indexes = [i for i in indexes if i.startswith(index_name_or_stem)]
+    print(f"Found matching indexes: {matching_indexes}")
+
+    if not matching_indexes:
+        raise Exception(f"No index found matching name or stem: {index_name_or_stem}")
 
     # Parse the timestamp from each index name and store in a dictionary
     timestamp_to_index_dict = {}
     for index_name in matching_indexes:
-        parts = index_name.split('-')
-        timestamp = parts[-1]
-        parsed_timestamp = datetime.strptime(timestamp, "%Y%m%d%H%M%S")
-        timestamp_to_index_dict[parsed_timestamp] = index_name
+        try:
+            parts = index_name.split('-')
+            timestamp = parts[-1]
+            parsed_timestamp = datetime.strptime(timestamp, "%Y%m%d%H%M%S")
+            timestamp_to_index_dict[parsed_timestamp] = index_name
+        except ValueError:
+            # If we can't parse the timestamp, just continue
+            continue
 
-    # Sort timestamps from oldest to newest
-    timestamps = sorted(timestamp_to_index_dict.keys())
+    if not timestamp_to_index_dict:
+        # If we found indexes but none had valid timestamps, just use the first one
+        index_name = matching_indexes[0]
+    else:
+        # Sort timestamps from oldest to newest and get the newest
+        timestamps = sorted(timestamp_to_index_dict.keys())
+        index_name = timestamp_to_index_dict[timestamps[-1]]
     
-    # Get the newest index based on timestamps
-    newest_index = timestamp_to_index_dict[timestamps[-1]]
+    # Get the index details
+    index = client.get_index(index_name)
+    fields = [f.name for f in index.fields]
+
+    return index_name, fields
 
     # Get the index details
     index = client.get_index(newest_index)

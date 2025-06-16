@@ -560,8 +560,6 @@ def pdf_orchestrator(context):
     try:
         chunking_tasks = []
         for file in files:
-            # Append the child file to the extracted_files list
-            extracted_files.append(pdf['child'])
             # Create a task to process the PDF chunk and append it to the extract_pdf_tasks list
             chunking_tasks.append(context.call_activity("chunk_extracts", json.dumps({'parent': file, 'source_container': source_container, 'extract_container': extract_container, 'doc_intel_formatted_results_container': doc_intel_formatted_results_container, 'image_analysis_results_container': image_analysis_results_container, 'chunking_strategy': chunking_strategy, 'max_chunk_size': max_chunk_size, 'chunk_overlap': chunk_overlap})))
         # Execute all the extract PDF tasks and get the results
@@ -2927,16 +2925,35 @@ def generate_document_level_summary_activity(activitypayload: str):
     # Get all page summaries for this document
     blob_service_client = BlobServiceClient.from_connection_string(os.environ['STORAGE_CONN_STR'])
     summary_container_client = blob_service_client.get_container_client(summary_container)
-    
     page_summaries = []
+    executive_summaries = []
+    detailed_summaries = []
+
+    # Collect all summaries
     for blob in summary_container_client.list_blobs(name_starts_with=os.path.splitext(parent_file)[0]):
         if "_document_summary" not in blob.name:  # Skip document summary if it exists
             blob_client = summary_container_client.get_blob_client(blob.name)
             summary_data = json.loads(blob_client.download_blob().readall())
-            page_summaries.append(summary_data['summary'])
-    
-    # Generate document-level summary using existing hierarchical summary function
-    doc_summary = generate_hierarchical_summary("\n\n".join(page_summaries))
+            if isinstance(summary_data['summary'], dict):
+                if 'executive_summary' in summary_data['summary']:
+                    executive_summaries.append(summary_data['summary']['executive_summary'])
+                if 'detailed_summary' in summary_data['summary']:
+                    detailed_summaries.append(summary_data['summary']['detailed_summary'])
+            else:
+                # Handle legacy format or plain text summaries
+                page_summaries.append(str(summary_data['summary']))
+
+    # Combine summaries into a single text, respecting the hierarchy
+    combined_text = ""
+    if executive_summaries:
+        combined_text += "Executive Summaries:\n" + "\n\n".join(executive_summaries) + "\n\n"
+    if detailed_summaries:
+        combined_text += "Detailed Summaries:\n" + "\n\n".join(detailed_summaries) + "\n\n"
+    if page_summaries:  # For any legacy format summaries
+        combined_text += "Additional Summaries:\n" + "\n\n".join(page_summaries)
+
+    # Generate document-level summary
+    doc_summary = generate_hierarchical_summary(combined_text.strip())
     
     # Create summary record
     summary_record = {
