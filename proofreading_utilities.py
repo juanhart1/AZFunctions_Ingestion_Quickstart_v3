@@ -6,100 +6,113 @@ import logging
 
 def _call_azure_openai(prompt, content):
     """Helper function to make Azure OpenAI API calls"""
-    api_base = os.environ['AOAI_ENDPOINT']
-    api_key = os.environ['AOAI_KEY']
-    deployment_name = os.environ['AOAI_GPT_VISION_MODEL']
-
-    base_url = f"{api_base}openai/deployments/{deployment_name}"
+    endpoint = os.environ["AZURE_OPENAI_ENDPOINT"]
+    key = os.environ["AZURE_OPENAI_KEY"]
+    model = os.environ.get("AZURE_OPENAI_MODEL", "gpt-4")
+    max_retries = 5
+    retry_delay = 5
+    
     headers = {
         "Content-Type": "application/json",
-        "api-key": api_key
+        "api-key": key
     }
-    endpoint = f"{base_url}/chat/completions?api-version=2023-12-01-preview"
-    
-    messages = [
-        {"role": "system", "content": prompt},
-        {"role": "user", "content": content}
-    ]
     
     data = {
-        "messages": messages,
-        "temperature": 0.0,
-        "top_p": 0.95,
-        "max_tokens": 800,
-        "response_format": {"type": "json_object"}
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": prompt
+            },
+            {
+                "role": "user",
+                "content": content
+            }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 2000
     }
-
-    processed = False
-    while not processed:
+    
+    for attempt in range(max_retries):
         try:
-            response = requests.post(endpoint, headers=headers, data=json.dumps(data))
-            if response.status_code == 429:
-                time.sleep(5)
-                continue
-            result = response.json()['choices'][0]['message']['content']
-            processed = True
-            return json.loads(result)
+            response = requests.post(endpoint, headers=headers, json=data)
+            response.raise_for_status()
+            result = response.json()
+            return json.loads(result['choices'][0]['message']['content'])
+        except requests.exceptions.RequestException as e:
+            if 'exceeded token rate' in str(e).lower() or response.status_code == 429:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+            logging.error(f"Error calling Azure OpenAI: {str(e)}")
+            raise
         except Exception as e:
-            if 'exceeded token rate' in str(e).lower():
-                time.sleep(5)
-            else:
-                logging.error(f"Error calling Azure OpenAI: {str(e)}")
-                raise e
+            logging.error(f"Error processing Azure OpenAI response: {str(e)}")
+            raise
 
 def check_spelling(text: str) -> list:
     """Check text for spelling errors using Azure OpenAI."""
     prompt = """You are a professional proofreader. Analyze the following text for spelling errors.
-    Return a JSON array of objects, where each object contains:
-    - "error": the misspelled word or phrase
-    - "context": the surrounding text for context
-    - "suggestions": an array of suggested corrections
-    - "message": explanation of the error
-    Return an empty array if no spelling errors are found."""
+    Return only a JSON array of objects, where each object has:
+    - 'error': the misspelled word
+    - 'suggestion': the correct spelling
+    - 'context': the sentence or phrase containing the error
+    If no errors are found, return an empty array."""
     
-    return _call_azure_openai(prompt, text).get("suggestions", [])
+    try:
+        result = _call_azure_openai(prompt, text)
+        return result.get('suggestions', [])
+    except Exception as e:
+        logging.error(f"Error in check_spelling: {str(e)}")
+        return []
 
 def check_grammar(text: str) -> list:
     """Check text for grammar errors using Azure OpenAI."""
-    prompt = """You are a professional proofreader. Analyze the following text for grammar and punctuation errors.
-    Return a JSON object with a "suggestions" array, where each object contains:
-    - "error": the grammatically incorrect text
-    - "context": the surrounding text for context
-    - "suggestions": an array of suggested corrections
-    - "message": explanation of the error
-    Return an empty array if no grammar errors are found."""
+    prompt = """You are a professional proofreader. Analyze the following text for grammar errors.
+    Return only a JSON array of objects, where each object has:
+    - 'error': the grammatical error
+    - 'suggestion': the correct grammar
+    - 'context': the sentence or phrase containing the error
+    - 'explanation': brief explanation of the grammar rule
+    If no errors are found, return an empty array."""
     
-    return _call_azure_openai(prompt, text).get("suggestions", [])
+    try:
+        result = _call_azure_openai(prompt, text)
+        return result.get('suggestions', [])
+    except Exception as e:
+        logging.error(f"Error in check_grammar: {str(e)}")
+        return []
 
 def check_clarity(text: str) -> list:
     """Check text for clarity issues using Azure OpenAI."""
     prompt = """You are a professional editor. Analyze the following text for clarity and readability issues.
-    Return a JSON object with a "suggestions" array, where each object contains:
-    - "type": either "readability", "sentence_length", or "structure"
-    - "message": detailed explanation of the clarity issue
-    - "text": the problematic text
-    - "improvement": suggested improvement
-    Focus on:
-    - Complex or confusing sentences
-    - Overly long sentences
-    - Unclear structure or flow
-    Return an empty array if no clarity issues are found."""
+    Return only a JSON array of objects, where each object has:
+    - 'issue': description of the clarity issue
+    - 'suggestion': recommended improvement
+    - 'context': the unclear passage
+    - 'impact': how the issue affects readability
+    If no issues are found, return an empty array."""
     
-    return _call_azure_openai(prompt, text).get("suggestions", [])
+    try:
+        result = _call_azure_openai(prompt, text)
+        return result.get('suggestions', [])
+    except Exception as e:
+        logging.error(f"Error in check_clarity: {str(e)}")
+        return []
 
 def check_style(text: str) -> list:
-    """Check text for style issues using Azure OpenAI."""
-    prompt = """You are a professional editor. Analyze the following text for style issues.
-    Return a JSON object with a "suggestions" array, where each object contains:
-    - "type": either "passive_voice", "weak_word", "redundancy", or "tone"
-    - "message": detailed explanation of the style issue
-    - "text": the problematic text
-    - "improvement": suggested improvement
-    Focus on:
-    - Passive voice usage
-    - Weak or unnecessary words
-    - Redundant expressions
-    - Inconsistent tone
-    Return an empty array if no style issues are found."""
+    """Check text for style consistency using Azure OpenAI."""
+    prompt = """You are a professional editor. Analyze the following text for style consistency issues.
+    Return only a JSON array of objects, where each object has:
+    - 'issue': description of the style issue
+    - 'suggestion': recommended improvement
+    - 'context': the relevant passage
+    - 'category': type of style issue (e.g., 'tone', 'formality', 'consistency')
+    If no issues are found, return an empty array."""
     
-    return _call_azure_openai(prompt, text).get("suggestions", [])
+    try:
+        result = _call_azure_openai(prompt, text)
+        return result.get('suggestions', [])
+    except Exception as e:
+        logging.error(f"Error in check_style: {str(e)}")
+        return []
