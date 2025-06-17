@@ -44,15 +44,24 @@ async def generate_document_summary(activitypayload: str) -> str:
         # Download and read the source content
         source_content = json.loads(source_blob_client.download_blob().readall().decode())
         
-        # Generate hierarchical summary
-        summary = generate_hierarchical_summary(source_content['text'])
+        # Generate hierarchical summary using 'content' instead of 'text'
+        summary = generate_hierarchical_summary(source_content['content'])
+        
+        # Create summary record with metadata
+        summary_record = {
+            'id': source_content.get('id', hashlib.sha256(file_name.encode()).hexdigest()),
+            'sourcefile': source_content.get('sourcefile', file_name),
+            'sourcepage': source_content.get('sourcepage', ''),
+            'summary': summary,
+            'generated_date': datetime.now().isoformat()
+        }
         
         # Create summary file name
         summary_file_name = file_name.replace('.json', '_summary.json')
         
         # Upload the summary
         summary_blob = summary_container_client.get_blob_client(summary_file_name)
-        summary_blob.upload_blob(json.dumps(summary), overwrite=True)
+        summary_blob.upload_blob(json.dumps(summary_record), overwrite=True)
         
         return summary_file_name
         

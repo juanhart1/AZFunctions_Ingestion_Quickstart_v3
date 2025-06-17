@@ -1,3 +1,12 @@
+import os
+import azure.functions as func
+import json
+from azure.storage.blob import BlobServiceClient
+
+# Initialize Azure Storage services
+connection_string = os.environ["AzureWebJobsStorage"]
+blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+
 import azure.functions as func
 import azure.durable_functions as df
 import logging
@@ -33,51 +42,9 @@ import subprocess
 app = df.DFApp(http_auth_level=func.AuthLevel.FUNCTION)
 
 @app.activity_trigger(input_name="activitypayload")
-def generate_document_summary_activity(activitypayload: str):
-    """
-    Activity trigger for generating document summaries.
-    
-    Args:
-        activitypayload (str): JSON string containing doc_intel_formatted_results_container,
-                              summary_container, and file information
-        
-    Returns:
-        str: Path to the generated summary file
-    """
-    # Parse the activity payload
-    data = json.loads(activitypayload)
-    doc_intel_formatted_results_container = data.get("doc_intel_formatted_results_container")
-    summary_container = data.get("summary_container")
-    file = data.get("file")
-    
-    # Create a BlobServiceClient
-    blob_service_client = BlobServiceClient.from_connection_string(os.environ['STORAGE_CONN_STR'])
-    
-    # Get container clients
-    doc_intel_container_client = blob_service_client.get_container_client(doc_intel_formatted_results_container)
-    summary_container_client = blob_service_client.get_container_client(summary_container)
-    
-    # Get document content
-    extract_blob_client = doc_intel_container_client.get_blob_client(file)
-    extract_data = json.loads(extract_blob_client.download_blob().readall())
-    
-    # Generate summary using the utility function - use 'content' instead of 'text'
-    summary = generate_hierarchical_summary(extract_data['content'])
-    
-    # Create summary record
-    summary_record = {
-        'id': extract_data['id'],
-        'sourcefile': extract_data['sourcefile'],
-        'sourcepage': extract_data.get('sourcepage', ''),
-        'summary': summary,
-        'generated_date': datetime.now().isoformat()
-    }
-    
-    # Upload summary
-    summary_blob_client = summary_container_client.get_blob_client(file)
-    summary_blob_client.upload_blob(json.dumps(summary_record), overwrite=True)
-    
-    return file
+async def generate_document_summary_activity(activitypayload: str):
+    """Activity trigger wrapper for generate_document_summary"""
+    return await generate_document_summary(activitypayload)
 
 # An HTTP-Triggered Function with a Durable Functions Client binding
 @app.route(route="orchestrators/{functionName}")
@@ -531,7 +498,7 @@ def pdf_orchestrator(context):
             for pdf in pdf_pages:
                 # Append the child file to the extracted_files list
                 extracted_files.append(pdf['child'])
-                # Create a task to process the PDF page and append it to the extract_pdf_tasks list
+                # Create a task to analyze the PDF page and append it to the image_analysis_tasks list
                 image_analysis_tasks.append(context.call_activity("analyze_pages_for_embedded_visuals", json.dumps({'child': pdf['child'], 'parent': pdf['parent'], 'pages_container': pages_container, 'image_analysis_results_container': image_analysis_results_container})))
             # Execute all the extract PDF tasks and get the results
             analyzed_pdf_files = yield context.task_all(image_analysis_tasks)
@@ -1032,6 +999,8 @@ def audio_video_orchestrator(context):
         try:
             source_files = yield context.call_activity_with_retry("delete_source_files", retry_options, json.dumps({'source_container': source_container,  'prefix': prefix_path}))
             transcript_files = yield context.call_activity_with_retry("delete_source_files", retry_options, json.dumps({'source_container': transcripts_container,  'prefix': prefix_path}))
+            chunk_files = yield context.call_activity_with_retry("delete_source_files", retry_options, json.dumps({'source_container': pages_container,  'prefix': prefix_path}))
+            doc_intel_result_files = yield context.call_activity_with_retry("delete_source_files", retry_options, json.dumps({'source_container': doc_intel_results_container,  'prefix': prefix_path}))
             extract_files = yield context.call_activity_with_retry("delete_source_files", retry_options, json.dumps({'source_container': extract_container,  'prefix': prefix_path}))
 
             context.set_custom_status('Ingestion & Clean Up Completed')
