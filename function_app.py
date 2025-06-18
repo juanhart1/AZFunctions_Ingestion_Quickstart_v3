@@ -35,7 +35,7 @@ from doc_intelligence_utilities import analyze_pdf, extract_results
 from aoai_utilities import generate_embeddings, classify_image, analyze_image, get_transcription, generate_qna_pair_helper, generate_hierarchical_summary
 from ai_search_utilities import create_vector_index, get_current_index, insert_documents_vector, delete_documents_vector, get_ids_from_all_docs
 from chunking_utils import create_chunks, split_text, create_semantic_chunks
-from activities import generate_document_summary
+from activities import generate_document_summary, generate_page_proofread, generate_document_proofread
 import tempfile
 import subprocess
 
@@ -45,6 +45,16 @@ app = df.DFApp(http_auth_level=func.AuthLevel.FUNCTION)
 async def generate_document_summary_activity(activitypayload: str):
     """Activity trigger wrapper for generate_document_summary"""
     return await generate_document_summary(activitypayload)
+
+@app.activity_trigger(input_name="activitypayload")
+async def generate_document_proofread_activity(activitypayload: str) -> str:
+    """Activity trigger wrapper for generating document-level proofreading results."""
+    return await generate_document_proofread(activitypayload)
+
+@app.activity_trigger(input_name="activitypayload")
+async def generate_page_proofread_activity(activitypayload: str) -> str:
+    """Activity trigger wrapper for generating page-level proofreading results."""
+    return await generate_page_proofread(activitypayload)
 
 # An HTTP-Triggered Function with a Durable Functions Client binding
 @app.route(route="orchestrators/{functionName}")
@@ -212,33 +222,12 @@ def pdf_orchestrator(context):
     - Creating and updating status records in CosmosDB.  
     - Splitting PDF files into single-page chunks.  
     - Processing PDF chunks with Document Intelligence.  
-    - Analyzing pages for embedded visuals if specified.  
+    - Analyzing pages for embedded visuals if specified.
+    - Proofreading document content for spelling, grammar, clarity and style issues.  
     - Chunking extracts based on user specifications.  
     - Generating embeddings for extracted PDF files.  
     - Indexing the processed documents.  
     - Optionally deleting intermediate data.  
-  
-    Parameters:  
-    - context (DurableOrchestrationContext): The context object provided by the Durable Functions runtime.
-
-    API Arguments:
-    - source_container (str): The name of the source container.
-    - extract_container (str): The name of the extract container.
-    - prefix_path (str): The prefix path for the files to be processed.
-    - index_name (str): The name of the index to which the documents will be added.
-    - automatically_delete (bool): A flag indicating whether to automatically delete intermediate data.
-    - analyze_images (bool): A flag indicating whether to analyze images for embedded visuals.
-    - chunking_strategy (bool): A flag indicating whether to allow overlapping chunks. If false, page-wise chunks will be created.
-    - max_chunk_size (int): The size of the chunks to be created.
-    - chunk_overlap (int): The amount of chunk_overlap between chunks.  
-    - embedding_model (str): The name of the embedding model to use for vectorization.
-    - cosmos_logging (bool): A flag indicating whether to enable logging to CosmosDB, default is true.
-  
-    Returns:  
-    - str: A JSON string containing the list of parent files, processed documents, indexed documents, and the index name.  
-  
-    Raises:  
-    - Exception: If any step in the workflow fails, an exception is raised with an appropriate error message.  
     """
 
     first_retry_interval_in_milliseconds = 5000
@@ -330,10 +319,19 @@ def pdf_orchestrator(context):
     doc_intel_formatted_results_container = f'{source_container}-doc-intel-formatted-results'
     image_analysis_results_container = f'{source_container}-image-analysis-results'
     summaries_container = f'{source_container}-summaries'
+    proofreading_container = f'{source_container}-proofreading'
 
     # Confirm that all storage locations exist to support document ingestion
     try:
-        container_check = yield context.call_activity_with_retry("check_containers", retry_options, json.dumps({'source_container': source_container}))
+        containers_created = yield context.call_activity("check_containers", 
+            json.dumps({'containers': [
+                pages_container, 
+                doc_intel_results_container,
+                doc_intel_formatted_results_container,
+                image_analysis_results_container,
+                summaries_container,
+                proofreading_container
+            ]}))
         context.set_custom_status('Document Processing Containers Checked')
         
     except Exception as e:
@@ -421,7 +419,7 @@ def pdf_orchestrator(context):
             # Create a task to process the PDF page and append it to the extract_pdf_tasks list
             extract_pdf_tasks.append(context.call_activity("process_pdf_with_document_intelligence", json.dumps({'child': pdf['child'], 'parent': pdf['parent'], 'pages_container': pages_container, 'doc_intel_results_container': doc_intel_results_container, 'doc_intel_formatted_results_container': doc_intel_formatted_results_container})))
         # Execute all the extract PDF tasks and get the results
-        extracted_pdf_files = yield context.task_all(extract_pdf_tasks)
+        doc_intel_formatted_results = yield context.task_all(extract_pdf_tasks)
 
     except Exception as e:
         context.set_custom_status('Ingestion Failed During Document Intelligence Extraction')
@@ -439,7 +437,88 @@ def pdf_orchestrator(context):
     status_record['processing_progress'] = 0.6
     status_record['status'] = 1
     if cosmos_logging:
-        yield context.call_activity("update_status_record", json.dumps({** status_record, **{'time_key': 'time_02_extraction'}}))
+        # Update status in cosmos
+        yield context.call_activity(
+            "update_cosmos_status",
+            json.dumps({'status_record': status_record, 'record_id': cosmos_record_id})
+        )
+
+    # Generate page-level proofreading results
+    try:
+        context.set_custom_status('Starting Page-Level Proofreading')
+        status_record['status_message'] = 'Starting Page-Level Proofreading'
+        status_record['processing_progress'] = 0.62
+        status_record['status'] = 1
+        if cosmos_logging:
+            yield context.call_activity("update_status_record", json.dumps(status_record))
+            
+        proofread_tasks = []
+        for doc_result in doc_intel_formatted_results:
+            proofread_tasks.append(
+                context.call_activity_with_retry(
+                    "generate_page_proofread_activity",
+                    retry_options,
+                    json.dumps({
+                        'doc_intel_formatted_results_container': doc_intel_formatted_results_container,
+                        'proofreading_container': proofreading_container,
+                        'file': doc_result
+                    })
+                )
+            )
+        proofread_results = yield context.task_all(proofread_tasks)
+        
+        context.set_custom_status('Page-Level Proofreading Complete')
+        status_record['status_message'] = 'Page-Level Proofreading Complete'
+        status_record['processing_progress'] = 0.63
+        status_record['status'] = 1
+        if cosmos_logging:
+            yield context.call_activity("update_status_record", json.dumps(status_record))
+            
+    except Exception as e:
+        context.set_custom_status('Proofreading Failed During Page Analysis')
+        status_record['status'] = -1
+        status_record['status_message'] = 'Proofreading Failed During Page Analysis'
+        status_record['error_message'] = str(e)
+        status_record['processing_progress'] = status_record.get('processing_progress', 0.0)
+        if cosmos_logging:
+            yield context.call_activity("update_status_record", json.dumps(status_record))
+        raise RuntimeError(f"Failed to generate page proofreading results: {str(e)}")
+
+    # Generate document-level proofreading results
+    try:
+        context.set_custom_status('Starting Document-Level Proofreading')
+        status_record['status_message'] = 'Starting Document-Level Proofreading'
+        status_record['processing_progress'] = 0.64
+        status_record['status'] = 1
+        if cosmos_logging:
+            yield context.call_activity("update_status_record", json.dumps(status_record))
+            
+        doc_proofread_result = yield context.call_activity_with_retry(
+            "generate_document_proofread_activity",
+            retry_options,
+            json.dumps({
+                'source_container': source_container,
+                'proofreading_container': proofreading_container,
+                'parent_file': parent_files[0]  # Assuming single file processing
+            })
+        )
+        
+        context.set_custom_status('Document-Level Proofreading Complete')
+        status_record['status_message'] = 'Document-Level Proofreading Complete'
+        status_record['processing_progress'] = 0.65
+        status_record['status'] = 1
+        if cosmos_logging:
+            yield context.call_activity("update_status_record", json.dumps({** status_record, **{'time_key': 'time_03_proofreading'}}))
+            
+    except Exception as e:
+        context.set_custom_status('Proofreading Failed During Document Analysis')
+        status_record['status'] = -1
+        status_record['status_message'] = 'Proofreading Failed During Document Analysis'
+        status_record['error_message'] = str(e)
+        status_record['processing_progress'] = status_record.get('processing_progress', 0.0)
+        if cosmos_logging:
+            yield context.call_activity("update_status_record", json.dumps(status_record))
+        raise RuntimeError(f"Failed to generate document proofreading results: {str(e)}")
 
     # Generate hierarchical summaries for each document 
     try:
@@ -465,10 +544,12 @@ def pdf_orchestrator(context):
 
         # Create document-level summary for each parent
         for parent_file in parent_docs.keys():
-            doc_summary_tasks.append(context.call_activity("generate_document_level_summary_activity", json.dumps({
+            doc_summary_tasks.append(context.call_activity("generate_document_summary_activity", json.dumps({
                 'source_container': source_container,
                 'summary_container': summaries_container,
-                'parent_file': parent_file
+                'doc_intel_formatted_results_container': doc_intel_formatted_results_container,
+                'parent_file': parent_file,
+                'file': parent_file.replace('.pdf', '.json')
             })))
         # Execute all document summary tasks
         document_summary_files = yield context.task_all(doc_summary_tasks)
@@ -729,13 +810,14 @@ def audio_video_orchestrator(context):
     prefix_path = payload.get("prefix_path")
     index_name = payload.get("index_name")
     automatically_delete = payload.get("automatically_delete")
+    analyze_images = payload.get("analyze_images")
     chunking_strategy = payload.get("chunking_strategy")
     max_chunk_size = payload.get("max_chunk_size")
     chunk_overlap = payload.get("chunk_overlap")
-    embedding_model = payload.get("embedding_model")
     entra_id = payload.get("entra_id")
     session_id = payload.get("session_id")
     cosmos_record_id = payload.get("cosmos_record_id")
+    embedding_model = payload.get("embedding_model")
     cosmos_logging = payload.get("cosmos_logging", True)
 
     ################## Legacy Arguments ##################
@@ -763,13 +845,13 @@ def audio_video_orchestrator(context):
         cosmos_record_id = context.instance_id
 
     # Create a status record in cosmos that can be updated throughout the course of this ingestion job
-    try:
-        if cosmos_logging:
+    if cosmos_logging:
+        try:
             payload = yield context.call_activity("create_status_record", json.dumps({'cosmos_id': cosmos_record_id}))
             context.set_custom_status('Created Cosmos Record Successfully')
-    except Exception as e:
-        context.set_custom_status('Failed to Create Cosmos Record')
-        pass
+        except Exception as e:
+            context.set_custom_status('Failed to Create Cosmos Record')
+            pass
 
     # Create a status record that can be used to update CosmosDB
     try:
@@ -779,6 +861,7 @@ def audio_video_orchestrator(context):
         status_record['prefix_path'] = prefix_path
         status_record['index_name'] = index_name
         status_record['automatically_delete'] = automatically_delete
+        status_record['analyze_images'] = analyze_images
         status_record['chunking_strategy'] = chunking_strategy
         status_record['max_chunk_size'] = max_chunk_size
         status_record['chunk_overlap'] = chunk_overlap
@@ -1088,7 +1171,7 @@ def non_pdf_orchestrator(context):
     # Create a status record in cosmos that can be updated throughout the course of this ingestion job
     try:
         if cosmos_logging:
-            payload = yield context.call_activity("create_status_record", json.dumps({'cosmos_id': cosmos_record_id}))
+            payload = yield context.call_activity("create_status_record", json.dumps({'cosmos_id': cosmos_record_id, 'user_id': entra_id}))
             context.set_custom_status('Created Cosmos Record Successfully')
     except Exception as e:
         context.set_custom_status('Failed to Create Cosmos Record')
@@ -1569,7 +1652,9 @@ def delete_source_files(activitypayload: str):
     # Extract the source container, file extension, and prefix from the payload
     source_container = data.get("source_container")
     prefix = data.get("prefix")
-    
+
+
+
     # Create a BlobServiceClient object which will be used to create a container client
     blob_service_client = BlobServiceClient.from_connection_string(os.environ['STORAGE_CONN_STR'])
     
@@ -1653,7 +1738,7 @@ def check_audio_video_containers(activitypayload: str):
     try:
         blob_service_client.create_container(transcripts_container)
     except Exception as e:
-        pass
+               pass
 
     # Return the list of file names
     return True
@@ -2940,3 +3025,87 @@ def generate_document_level_summary_activity(activitypayload: str):
     doc_summary_blob.upload_blob(json.dumps(summary_record), overwrite=True)
     
     return doc_summary_filename
+
+@app.orchestration_trigger(context_name="context")
+def proofreading_orchestrator(context):
+    """
+    Orchestrates the proofreading process for documents.
+    
+    This orchestrator processes individual pages for proofreading and then generates
+    a document-level summary of all proofreading results.
+    
+    Expected payload:
+    {
+        "doc_intel_formatted_results_container": str,
+        "proofreading_container": str,
+        "parent_file": str,
+        "page_files": List[str]
+    }
+    """
+    
+    first_retry_interval_in_milliseconds = 5000
+    max_number_of_attempts = 2
+    retry_options = df.RetryOptions(first_retry_interval_in_milliseconds, max_number_of_attempts)
+    
+    try:
+        # Get input payload
+        payload = context.get_input()
+        
+        # Validate required fields
+        required_fields = ['doc_intel_formatted_results_container', 'proofreading_container', 
+                         'parent_file', 'page_files']
+        if not all(field in payload for field in required_fields):
+            raise ValueError(f"Missing required fields in payload. Required: {required_fields}")
+            
+        doc_intel_container = payload['doc_intel_formatted_results_container']
+        proofreading_container = payload['proofreading_container']
+        parent_file = payload['parent_file']
+        page_files = payload['page_files']
+        
+        if not page_files:
+            raise ValueError("No page files provided for processing")
+            
+        # Process each page in parallel
+        proofread_tasks = []
+        for page_file in page_files:
+            page_payload = {
+                'doc_intel_formatted_results_container': doc_intel_container,
+                'proofreading_container': proofreading_container,
+                'file': page_file
+            }
+            
+            # Call the page proofread activity with retry options
+            task = context.call_activity_with_retry(
+                "generate_page_proofread",
+                retry_options,
+                json.dumps(page_payload)
+            )
+            proofread_tasks.append(task)
+            
+        # Wait for all page processing to complete
+        page_results = yield context.task_all(proofread_tasks)
+        
+        # Generate document-level summary
+        doc_payload = {
+            'source_container': doc_intel_container,
+            'proofreading_container': proofreading_container,
+            'parent_file': parent_file
+        }
+        
+        document_result = yield context.call_activity_with_retry(
+            "generate_document_proofread_activity",
+            retry_options,
+            json.dumps(doc_payload)
+        )
+        
+        return {
+            'status': 'completed',
+            'parent_file': parent_file,
+            'page_results': page_results,
+            'document_result': document_result
+        }
+        
+    except Exception as e:
+        error_msg = f"Error in proofreading_orchestrator: {str(e)}"
+        context.set_custom_status(error_msg)
+        raise

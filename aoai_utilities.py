@@ -359,7 +359,7 @@ def generate_hierarchical_summary(content):
         "Content-Type": "application/json",
         "api-key": api_key
     }
-    endpoint = f"{base_url}/chat/completions?api-version=2023-12-01-preview"
+    endpoint = f"{base_url}/chat/completions?api-version=2025-01-01-preview"
     data = {
         "messages": messages,
         "temperature": 0.3,
