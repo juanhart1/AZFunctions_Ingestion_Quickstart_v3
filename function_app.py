@@ -518,9 +518,7 @@ def pdf_orchestrator(context):
         status_record['processing_progress'] = status_record.get('processing_progress', 0.0)
         if cosmos_logging:
             yield context.call_activity("update_status_record", json.dumps(status_record))
-        raise RuntimeError(f"Failed to generate document proofreading results: {str(e)}")
-
-    # Generate hierarchical summaries for each document 
+        raise RuntimeError(f"Failed to generate document proofreading results: {str(e)}")        # Generate page-level summaries for each document
     try:
         summary_tasks = []
         for pdf in pdf_pages:
@@ -532,7 +530,7 @@ def pdf_orchestrator(context):
         # Execute all summary tasks and get results 
         summary_files = yield context.task_all(summary_tasks)
 
-        # Now generate document-level summaries for each parent document
+        # Now generate document-level summaries by combining page summaries
         doc_summary_tasks = []
         # Group pages by parent document
         parent_docs = {}
@@ -542,14 +540,13 @@ def pdf_orchestrator(context):
                 parent_docs[parent] = []
             parent_docs[parent].append(pdf['child'])
 
-        # Create document-level summary for each parent
-        for parent_file in parent_docs.keys():
-            doc_summary_tasks.append(context.call_activity("generate_document_summary_activity", json.dumps({
+        # Create document-level summary for each parent by combining its page summaries
+        for parent_file, child_files in parent_docs.items():
+            doc_summary_tasks.append(context.call_activity("generate_document_level_summary_activity", json.dumps({
                 'source_container': source_container,
-                'summary_container': summaries_container,
-                'doc_intel_formatted_results_container': doc_intel_formatted_results_container,
+                'summary_container': summaries_container, 
                 'parent_file': parent_file,
-                'file': parent_file.replace('.pdf', '.json')
+                'page_files': [f.replace('.pdf', '_summary.json') for f in child_files]
             })))
         # Execute all document summary tasks
         document_summary_files = yield context.task_all(doc_summary_tasks)
