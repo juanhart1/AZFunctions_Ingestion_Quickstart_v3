@@ -115,20 +115,48 @@ async def generate_page_proofread(activitypayload: str) -> str:
         if not isinstance(source_content, dict) or 'content' not in source_content:
             raise ValueError(f"Invalid source content format in {file_name}")
             
+        # Validate and prepare content
+        content = source_content.get('content', '')
+        if not content:
+            logging.warning(f"Empty or missing content in source file {file_name}")
+            content = ""
+        elif not isinstance(content, str):
+            logging.warning(f"Non-string content in source file {file_name}, converting to string")
+            content = str(content)
+            
+        logging.info(f"Starting proofreading analysis for {file_name} (content length: {len(content)})")
+        
         # Generate proofreading results with retries
         max_retries = 3
         retry_delay = 1  # seconds
         last_error = None
+        proofread_results = {'spelling': [], 'grammar': [], 'clarity': [], 'style': []}
         
         for attempt in range(max_retries):
             try:
-                proofread_results = {
-                    'spelling': check_spelling(source_content['content']),
-                    'grammar': check_grammar(source_content['content']),
-                    'clarity': check_clarity(source_content['content']),
-                    'style': check_style(source_content['content'])
-                }
-                break
+                # Process each check separately for better error handling
+                for check_type, check_func in [
+                    ('spelling', check_spelling),
+                    ('grammar', check_grammar),
+                    ('clarity', check_clarity),
+                    ('style', check_style)
+                ]:
+                    try:
+                        logging.info(f"Starting {check_type} check (attempt {attempt + 1}/{max_retries})")
+                        results = check_func(content)
+                        proofread_results[check_type] = results
+                        logging.info(f"Completed {check_type} check, found {len(results)} issues")
+                    except Exception as check_error:
+                        logging.error(f"Error in {check_type} check: {str(check_error)}", exc_info=True)
+                        proofread_results[check_type] = []
+                
+                # If we got here, we have at least partial results
+                if any(len(results) > 0 for results in proofread_results.values()):
+                    logging.info("Successfully generated some proofreading results")
+                    break
+                else:
+                    logging.warning("No issues found in any category, this might indicate a problem")
+                    
             except Exception as e:
                 last_error = e
                 if attempt < max_retries - 1:

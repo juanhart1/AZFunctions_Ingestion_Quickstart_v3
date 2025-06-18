@@ -34,25 +34,70 @@ def _call_azure_openai(prompt, content):
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 2000
+        "max_tokens": 10000,
+        "response_format": {"type": "json_object"}
     }
     
     for attempt in range(max_retries):
         try:
+            logging.info(f"Making Azure OpenAI request, attempt {attempt + 1}/{max_retries}")
             response = requests.post(endpoint, headers=headers, json=data)
             response.raise_for_status()
             result = response.json()
             content = result['choices'][0]['message']['content']
+            logging.debug(f"Azure OpenAI raw response: {content}")
             
             # If content is already a dict/list, return it directly
             if isinstance(content, (dict, list)):
+                logging.info(f"Response already in correct format, found {len(content.get('suggestions', []))} suggestions")
                 return content
-                
-            # Otherwise, try to parse it as JSON
+            
+            # Clean the response string
+            content = content.strip()
+            if content.startswith('```json'):
+                content = content[7:]  # Remove ```json prefix
+            if content.endswith('```'):
+                content = content[:-3]  # Remove ``` suffix
+            content = content.strip()
+            
+            # Try to parse the cleaned JSON
             try:
-                return json.loads(content)
-            except json.JSONDecodeError:
-                # If it's not valid JSON, wrap it in a suggestions array
+                parsed = json.loads(content)
+                logging.info(f"Successfully parsed JSON response, found {len(parsed.get('suggestions', []))} suggestions")
+                return parsed
+            except json.JSONDecodeError as je:
+                logging.error(f"Initial JSON parse failed at position {je.pos}: {je.msg}")
+                logging.error(f"Problematic content: {content[max(0, je.pos-50):min(len(content), je.pos+50)]}")
+                
+                # Try to extract valid JSON from the response
+                if '"suggestions":' in content:
+                    try:
+                        # Find the suggestions array
+                        suggestions_start = content.find('"suggestions":') + len('"suggestions":')
+                        suggestions_text = content[suggestions_start:].strip()
+                        
+                        # Extract the array portion
+                        if suggestions_text.startswith('['):
+                            bracket_count = 1
+                            end_pos = -1
+                            for i, char in enumerate(suggestions_text[1:], 1):
+                                if char == '[':
+                                    bracket_count += 1
+                                elif char == ']':
+                                    bracket_count -= 1
+                                    if bracket_count == 0:
+                                        end_pos = i + 1
+                                        break
+                                        
+                            if end_pos > 0:
+                                suggestions = json.loads(suggestions_text[:end_pos])
+                                logging.info(f"Successfully extracted suggestions array with {len(suggestions)} items")
+                                return {"suggestions": suggestions}
+                    except Exception as e:
+                        logging.error(f"Failed to extract suggestions array: {str(e)}")
+                        logging.error(f"Content that failed to parse: {suggestions_text[:200]}...")
+                
+                logging.warning("Returning empty suggestions array after all JSON parsing attempts failed")
                 return {"suggestions": []}
                 
         except requests.exceptions.RequestException as e:
@@ -68,71 +113,211 @@ def _call_azure_openai(prompt, content):
 
 def check_spelling(text: str) -> list:
     """Check text for spelling errors using Azure OpenAI."""
-    prompt = """You are a professional proofreader. Analyze the following text for spelling errors.
-    Return a JSON object with a 'suggestions' key containing an array of objects. Each object should have:
-    - 'error': the misspelled word
-    - 'suggestion': the correct spelling
-    - 'context': the sentence or phrase containing the error
-    If no errors are found, return {"suggestions": []}.
-    Your response must be valid JSON."""
+    if not text or not isinstance(text, str):
+        logging.warning("Invalid input to check_spelling: empty or non-string input")
+        return []
+        
+    logging.info(f"Starting spelling check on text of length {len(text)}")
+    prompt = """You are a professional proofreader focusing on spelling errors.
+
+    RESPONSE FORMAT:
+    You must respond with a valid JSON object using this exact schema:
+    {
+        "suggestions": [
+            {
+                "error": "misspelled word",
+                "suggestion": "correct spelling",
+                "context": "sentence containing the error"
+            }
+        ]
+    }
+
+    If no errors are found, respond with exactly: {"suggestions": []}
+
+    INSTRUCTIONS:
+    1. Check every word carefully for spelling errors
+    2. Consider context to distinguish between errors and specialized terms
+    3. DO NOT include any explanations or text outside the JSON structure
+    4. Include surrounding context to show word usage
+    5. Use standard English spelling
+
+    Analyze the text for spelling errors and respond only with the JSON object."""
     
     try:
         result = _call_azure_openai(prompt, text)
-        return result.get('suggestions', [])
+        suggestions = result.get('suggestions', [])
+        logging.info(f"Spelling check completed, found {len(suggestions)} potential issues")
+        for suggestion in suggestions:
+            logging.debug(f"Spelling issue found: {suggestion.get('error')} -> {suggestion.get('suggestion')}")
+        return suggestions
     except Exception as e:
-        logging.error(f"Error in check_spelling: {str(e)}")
+        logging.error(f"Error in check_spelling: {str(e)}", exc_info=True)
         return []
 
 def check_grammar(text: str) -> list:
     """Check text for grammar errors using Azure OpenAI."""
-    prompt = """You are a professional proofreader. Analyze the following text for grammar errors.
-    Return a JSON object with a 'suggestions' key containing an array of objects. Each object should have:
-    - 'error': the grammatical error
-    - 'suggestion': the correct grammar
-    - 'context': the sentence or phrase containing the error
-    - 'explanation': brief explanation of the grammar rule
-    If no errors are found, return {"suggestions": []}.
-    Your response must be valid JSON."""
+    if not text or not isinstance(text, str):
+        logging.warning("Invalid input to check_grammar: empty or non-string input")
+        return []
+        
+    logging.info(f"Starting grammar check on text of length {len(text)}")
+    prompt = """You are a professional proofreader specializing in grammar.
+
+    RESPONSE FORMAT:
+    You must respond with a valid JSON object using this exact schema:
+    {
+        "suggestions": [
+            {
+                "error": "grammatical error phrase",
+                "suggestion": "corrected phrase",
+                "context": "complete sentence containing the error",
+                "explanation": "brief explanation of the grammar rule"
+            }
+        ]
+    }
+
+    If no errors are found, respond with exactly: {"suggestions": []}
+
+    INSTRUCTIONS:
+    1. Check sentence structure, verb tense agreement, punctuation
+    2. Include the full problematic phrase, not just single words
+    3. Provide the complete corrected phrase
+    4. DO NOT include any text outside the JSON structure
+    5. Focus on clear grammatical errors, not style preferences
+
+    Analyze the text for grammar errors and respond only with the JSON object."""
     
     try:
         result = _call_azure_openai(prompt, text)
-        return result.get('suggestions', [])
+        suggestions = result.get('suggestions', [])
+        logging.info(f"Grammar check completed, found {len(suggestions)} potential issues")
+        for suggestion in suggestions:
+            logging.debug(f"Grammar issue found: {suggestion.get('error')} -> {suggestion.get('suggestion')} ({suggestion.get('explanation')})")
+        return suggestions
     except Exception as e:
-        logging.error(f"Error in check_grammar: {str(e)}")
+        logging.error(f"Error in check_grammar: {str(e)}", exc_info=True)
         return []
 
 def check_clarity(text: str) -> list:
     """Check text for clarity issues using Azure OpenAI."""
-    prompt = """You are a professional editor. Analyze the following text for clarity and readability issues.
-    Return a JSON object with a 'suggestions' key containing an array of objects. Each object should have:
-    - 'issue': description of the clarity issue
-    - 'suggestion': recommended improvement
-    - 'context': the unclear passage
-    - 'impact': how the issue affects readability
-    If no issues are found, return {"suggestions": []}.
-    Your response must be valid JSON."""
+    if not text or not isinstance(text, str):
+        logging.warning("Invalid input to check_clarity: empty or non-string input")
+        return []
+        
+    logging.info(f"Starting clarity check on text of length {len(text)}")
+    prompt = """You are a professional editor specializing in clarity and readability.
+
+    RESPONSE FORMAT:
+    You must respond with a valid JSON object using this exact schema:
+    {
+        "suggestions": [
+            {
+                "issue": "description of clarity issue",
+                "suggestion": "recommended improvement",
+                "context": "unclear passage",
+                "impact": "how this affects readability"
+            }
+        ]
+    }
+
+    If no issues are found, respond with exactly: {"suggestions": []}
+
+    INSTRUCTIONS:
+    1. Focus on readability and comprehension issues
+    2. Identify complex or confusing passages
+    3. Suggest clearer alternatives
+    4. DO NOT include any text outside the JSON structure
+    5. Consider audience comprehension level
+
+    Analyze the text for clarity issues and respond only with the JSON object."""
     
     try:
         result = _call_azure_openai(prompt, text)
-        return result.get('suggestions', [])
+        suggestions = result.get('suggestions', [])
+        logging.info(f"Clarity check completed, found {len(suggestions)} potential issues")
+        for suggestion in suggestions:
+            logging.debug(f"Clarity issue found: {suggestion.get('issue')} -> {suggestion.get('suggestion')}")
+        return suggestions
     except Exception as e:
-        logging.error(f"Error in check_clarity: {str(e)}")
+        logging.error(f"Error in check_clarity: {str(e)}", exc_info=True)
         return []
 
 def check_style(text: str) -> list:
     """Check text for style consistency using Azure OpenAI."""
-    prompt = """You are a professional editor. Analyze the following text for style consistency issues.
-    Return a JSON object with a 'suggestions' key containing an array of objects. Each object should have:
-    - 'issue': description of the style issue
-    - 'suggestion': recommended improvement
-    - 'context': the relevant passage
-    - 'category': type of style issue (e.g., 'tone', 'formality', 'consistency')
-    If no issues are found, return {"suggestions": []}.
-    Your response must be valid JSON."""
+    if not text or not isinstance(text, str):
+        logging.warning("Invalid input to check_style: empty or non-string input")
+        return []
+        
+    logging.info(f"Starting style check on text of length {len(text)}")
+    prompt = """You are a professional editor specializing in style consistency.
+
+    RESPONSE FORMAT:
+    You must respond with a valid JSON object using this exact schema:
+    {
+        "suggestions": [
+            {
+                "issue": "description of style issue",
+                "suggestion": "recommended improvement",
+                "context": "relevant passage",
+                "category": "type of style issue"
+            }
+        ]
+    }
+
+    If no issues are found, respond with exactly: {"suggestions": []}
+
+    INSTRUCTIONS:
+    1. Check for consistency in tone, formality, and terminology
+    2. Identify style shifts or inconsistencies
+    3. Suggest consistent alternatives
+    4. DO NOT include any text outside the JSON structure
+    5. Focus on document-level consistency
+
+    Analyze the text for style issues and respond only with the JSON object."""
     
     try:
         result = _call_azure_openai(prompt, text)
-        return result.get('suggestions', [])
+        suggestions = result.get('suggestions', [])
+        logging.info(f"Style check completed, found {len(suggestions)} potential issues")
+        for suggestion in suggestions:
+            logging.debug(f"Style issue found: {suggestion.get('issue')} -> {suggestion.get('suggestion')} ({suggestion.get('category')})")
+        return suggestions
     except Exception as e:
-        logging.error(f"Error in check_style: {str(e)}")
+        logging.error(f"Error in check_style: {str(e)}", exc_info=True)
         return []
+
+def check_document_grammar(content):
+    """Check document for grammar issues"""
+    prompt = """You are a professional proofreader. Analyze the following text for grammar, syntax, and spelling errors.
+    Return your response in the following JSON format:
+    {
+        "suggestions": [
+            {
+                "type": "grammar"|"spelling"|"syntax",
+                "original": "the problematic text",
+                "suggestion": "the suggested correction",
+                "explanation": "brief explanation of the issue"
+            }
+        ]
+    }
+    Only include actual errors, not style suggestions. If there are no issues, return an empty suggestions array."""
+
+    try:
+        logging.info("Starting grammar check")
+        result = _call_azure_openai(prompt, content)
+        
+        if not isinstance(result, dict):
+            logging.error(f"Unexpected response format from grammar check: {type(result)}")
+            return {"suggestions": []}
+            
+        suggestions = result.get("suggestions", [])
+        if not isinstance(suggestions, list):
+            logging.error(f"Invalid suggestions format: {type(suggestions)}")
+            return {"suggestions": []}
+            
+        logging.info(f"Grammar check completed successfully with {len(suggestions)} suggestions")
+        return {"suggestions": suggestions}
+        
+    except Exception as e:
+        logging.error(f"Error in grammar check: {str(e)}")
+        return {"suggestions": []}
