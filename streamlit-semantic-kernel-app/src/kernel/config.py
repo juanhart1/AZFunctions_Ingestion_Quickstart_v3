@@ -1,5 +1,5 @@
 import os
-from kernel.adapter import load_kernel_adapter
+from .adapter import load_kernel_adapter
 
 def load_semantic_kernel():
     """

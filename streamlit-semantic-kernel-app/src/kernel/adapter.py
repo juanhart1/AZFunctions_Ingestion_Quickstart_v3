@@ -49,25 +49,26 @@ class KernelAdapter:
             return False
             
         try:
-            # Add text completion service
-            self.kernel.add_chat_service(
-                "azure-completion", 
-                self.sk.connectors.ai.open_ai.AzureChatCompletion(
-                    deployment_name=completion_deployment,
-                    endpoint=endpoint,
-                    api_key=api_key
-                )
+            # In Semantic Kernel 1.0.0+, the API has changed
+            # Add chat completion service
+            from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion, AzureTextEmbedding
+            
+            chat_service = AzureChatCompletion(
+                deployment_name=completion_deployment,
+                endpoint=endpoint,
+                api_key=api_key
             )
+            # The current API doesn't use service_id parameter
+            self.kernel.add_service(chat_service)
             
             # Add text embedding service
-            self.kernel.add_text_embedding_generation_service(
-                "azure-embedding",
-                self.sk.connectors.ai.open_ai.AzureTextEmbedding(
-                    deployment_name=embedding_deployment,
-                    endpoint=endpoint,
-                    api_key=api_key
-                )
+            embedding_service = AzureTextEmbedding(
+                deployment_name=embedding_deployment,
+                endpoint=endpoint,
+                api_key=api_key
             )
+            self.kernel.add_service(embedding_service)
+            
             return True
         except Exception as e:
             print(f"Error adding OpenAI services: {e}")
@@ -88,10 +89,22 @@ class KernelAdapter:
             return None
             
         try:
-            return self.kernel.create_semantic_function(
-                prompt_template=prompt_template,
+            # In Semantic Kernel 1.0.0+, the create_semantic_function API has changed
+            from semantic_kernel.functions import KernelFunction
+            from semantic_kernel.prompt_template import PromptTemplate
+            
+            # For Semantic Kernel 1.33.0, the API might be slightly different
+            prompt_config = PromptTemplate(
+                template=prompt_template
+            )
+            
+            # Create a function with the updated API
+            function = self.kernel.create_function_from_prompt(
+                prompt=prompt_template,
                 description=description
             )
+            
+            return function
         except Exception as e:
             print(f"Error creating semantic function: {e}")
             return None
@@ -107,7 +120,9 @@ class KernelAdapter:
             return None
             
         try:
-            return self.kernel.create_new_context()
+            # In Semantic Kernel 1.0.0+, contexts are managed differently
+            from semantic_kernel import KernelArguments
+            return KernelArguments()
         except Exception as e:
             print(f"Error creating kernel context: {e}")
             return {}
@@ -135,7 +150,9 @@ class KernelAdapter:
             for key, value in kwargs.items():
                 context[key] = value
                 
-            return await function.invoke_async(context=context)
+            # In Semantic Kernel 1.0.0+, the invoke_async method is replaced
+            result = await self.kernel.invoke(function, arguments=context)
+            return result
         except Exception as e:
             print(f"Error invoking function: {e}")
             return None

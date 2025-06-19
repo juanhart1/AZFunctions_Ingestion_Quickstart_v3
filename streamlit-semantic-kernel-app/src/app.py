@@ -63,11 +63,25 @@ if functionality == "Q&A":
         
         if query:
             with st.spinner("Searching for answer..."):
+                # Add a debug expander
+                with st.expander("Debug Information"):
+                    st.info("Performing search and generating answer...")
+                
                 # Process the query using the QA skill
                 answer = qa_skill.answer_question(query, document_id)
                 
                 # Display the answer
                 display_result(answer, "qna")
+                
+                # Show a debug checkbox
+                if st.checkbox("Show Search Debug Info"):
+                    st.code(f"""
+Query: {query}
+Document ID: {document_id}
+Index: {qa_skill.search_index}
+Endpoint: {qa_skill.search_endpoint}
+                    """)
+                    st.warning("Check the terminal output for detailed debug logs.")
 
 elif functionality == "Summarization":
     st.header("Document Summarization")

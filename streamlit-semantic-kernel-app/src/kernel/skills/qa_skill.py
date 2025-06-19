@@ -47,6 +47,18 @@ class QASkill:
             retrieved_docs = self._retrieve_documents(query, document_id)
             
             if not retrieved_docs:
+                print(f"DEBUG: No results found for query: '{query}' and document_id: '{document_id}'")
+                # Try a more permissive search if we got no results with a filter
+                if document_id and query:
+                    print(f"DEBUG: Trying without document_id filter")
+                    retrieved_docs = self._retrieve_documents(query, None)
+                    
+                # If still no results, try with just a wildcard search
+                if not retrieved_docs:
+                    print(f"DEBUG: Trying wildcard search")
+                    retrieved_docs = self._retrieve_documents("*", document_id)
+            
+            if not retrieved_docs:
                 return "I couldn't find relevant information to answer that question."
             
             # Step 2: Synthesize an answer using Azure OpenAI
@@ -62,46 +74,79 @@ class QASkill:
         Retrieve relevant documents from Azure AI Search.
         """
         # Prepare search filters if document_id is provided
-        filter_expr = f"document_id eq '{document_id}'" if document_id else None
+        filter_expr = f"sourcefileref eq '{document_id}'" if document_id else None
         
-        # Perform a semantic search if available, fall back to vector search
+        # Add debugging
+        print(f"DEBUG: Searching with query: '{query}' and filter: '{filter_expr}'")
+        print(f"DEBUG: Search index: {self.search_index}")
+        
         try:
+            # First attempt standard search to ensure we get results
+            # without relying on semantic search configurations
+            
+            # For empty or very short queries, use a wildcard search to return all docs
+            search_text = query
+            if not query or len(query.strip()) < 3:
+                search_text = "*"
+                print(f"DEBUG: Using wildcard search for short query: '{query}'")
+                
             results = self.search_client.search(
-                search_text=query,
+                search_text=search_text,
                 filter=filter_expr,
-                query_type="semantic",
-                semantic_configuration_name="default",
-                query_caption="extractive",
-                query_answer="extractive",
                 top=5
             )
+            
+            # Collect the results
+            search_results = []
+            for result in results:
+                # Debug: print available fields for first result
+                if len(search_results) == 0:
+                    print("DEBUG: Available fields in search result:")
+                    for field_name in result.keys():
+                        print(f"  - {field_name}: {type(result[field_name])}")
+                
+                # Try to find the content field - it might have a different name
+                content_field = "content"
+                if "content" not in result:
+                    # Look for likely content field names
+                    possible_content_fields = ["text", "chunk", "document_content", "body", "document_text"]
+                    for field in possible_content_fields:
+                        if field in result:
+                            content_field = field
+                            print(f"DEBUG: Using {field} as content field")
+                            break
+                
+                search_results.append({
+                    "content": result.get(content_field, ""),
+                    "document_id": result.get("sourcefileref", result.get("id", "")),
+                    "page_number": result.get("page_number", 0),
+                    "score": result["@search.score"],
+                    "captions": result.get("@search.captions", []),
+                    "answers": result.get("@search.answers", [])
+                })
+            
+            # Add more debugging
+            print(f"DEBUG: Search returned {len(search_results)} results")
+            if len(search_results) > 0:
+                print(f"DEBUG: First result score: {search_results[0]['score']}")
+                print(f"DEBUG: First result content starts with: {search_results[0]['content'][:100] if search_results[0]['content'] else 'No content'}")
+            
+            return search_results
+            
         except Exception as e:
-            # Fall back to regular search if semantic search is not available
-            results = self.search_client.search(
-                search_text=query,
-                filter=filter_expr,
-                top=5
-            )
-        
-        # Collect the results
-        search_results = []
-        for result in results:
-            search_results.append({
-                "content": result.get("content", ""),
-                "document_id": result.get("document_id", ""),
-                "page_number": result.get("page_number", 0),
-                "score": result["@search.score"],
-                "captions": result.get("@search.captions", []),
-                "answers": result.get("@search.answers", [])
-            })
-        
-        return search_results
+            print(f"ERROR performing search: {type(e).__name__} - {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return []
 
     def _generate_answer(self, query: str, documents: List[Dict[str, Any]]) -> str:
         """
         Generate an answer using Azure OpenAI based on retrieved documents.
         """
+        print(f"DEBUG: Generating answer for query: '{query}' with {len(documents)} documents")
+        
         if not self.aoai_endpoint or not self.aoai_key or not self.aoai_deployment:
+            print("DEBUG: No Azure OpenAI configuration found, falling back to document content")
             # If Azure OpenAI is not configured, return the content of the top result
             # Or use the semantic answers if available
             if documents and documents[0].get("answers") and len(documents[0]["answers"]) > 0:
