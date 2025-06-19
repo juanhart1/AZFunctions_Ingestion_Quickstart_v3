@@ -1,0 +1,14 @@
+streamlit==1.32.0
+semantic-kernel==0.9.3b1
+azure-storage-blob==12.19.0
+azure-search-documents==11.4.0b6
+python-dotenv>=0.21.0
+httpx==0.25.2
+pandas==2.2.0
+pillow==10.2.0
+werkzeug>=3.0.0
+# NumPy version constraint dictated by streamlit
+numpy>=1.19.3,<=2.0.0
+openai>=1.12.0
+# Pin pydantic version for semantic-kernel compatibility
+pydantic<2.0.0
