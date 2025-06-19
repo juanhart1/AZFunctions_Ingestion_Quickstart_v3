@@ -113,7 +113,27 @@ def display_result(result, result_type):
         st.write(result)
     elif result_type == "summarization":
         st.subheader("Summary")
-        st.write(result)
+        
+        # Check if result is a dict with the new format
+        if isinstance(result, dict):
+            if "error" in result:
+                st.error(result["error"])
+            elif "executive" in result and "detailed" in result:
+                # Display executive summary
+                st.markdown("### Executive Summary")
+                st.write(result["executive"])
+                
+                # Display detailed summary
+                st.markdown("### Detailed Summary")
+                st.write(result["detailed"])
+            elif "summary" in result:
+                # Legacy format with just one summary
+                st.write(result["summary"])
+            else:
+                st.write("Unknown summary format")
+        else:
+            # Handle legacy string format
+            st.write(result)
     elif result_type == "proofreading":
         st.subheader("Proofreading Results")
         st.write(result)
