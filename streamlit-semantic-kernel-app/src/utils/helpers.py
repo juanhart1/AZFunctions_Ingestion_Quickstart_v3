@@ -112,28 +112,75 @@ def display_result(result, result_type):
         st.subheader("Answer")
         st.write(result)
     elif result_type == "summarization":
-        st.subheader("Summary")
+        st.header("Document Summary")
+        
+        # Add horizontal rule for better visual separation
+        st.markdown("---")
         
         # Check if result is a dict with the new format
         if isinstance(result, dict):
             if "error" in result:
                 st.error(result["error"])
             elif "executive" in result and "detailed" in result:
+                # Create a container for the metadata
+                meta_col1, meta_col2 = st.columns(2)
+                
+                # Display document info if available
+                if "source_file" in result and result["source_file"]:
+                    meta_col1.info(f"📄 **Source**: {result['source_file']}")
+                
+                if "generated_date" in result and result["generated_date"]:
+                    # Format the date nicely if possible
+                    try:
+                        from datetime import datetime
+                        date_obj = datetime.fromisoformat(result["generated_date"])
+                        formatted_date = date_obj.strftime("%B %d, %Y at %I:%M %p")
+                        meta_col2.info(f"🕒 **Generated**: {formatted_date}")
+                    except:
+                        meta_col2.info(f"🕒 **Generated**: {result['generated_date']}")
+                
+                st.markdown("---")
+                
                 # Display executive summary
-                st.markdown("### Executive Summary")
-                st.write(result["executive"])
+                st.subheader("Executive Summary")
+                st.markdown(f"<div style='background-color:#f0f2f6;padding:15px;border-radius:5px;'>{result['executive']}</div>", unsafe_allow_html=True)
+                
+                # Add some space
+                st.markdown("<br>", unsafe_allow_html=True)
                 
                 # Display detailed summary
-                st.markdown("### Detailed Summary")
-                st.write(result["detailed"])
+                st.subheader("Detailed Summary")
+                st.markdown(f"<div style='background-color:#f0f2f6;padding:15px;border-radius:5px;'>{result['detailed']}</div>", unsafe_allow_html=True)
+                
+                # Add some space
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Create two columns for topics and conclusions
+                if ("topics" in result and result["topics"]) or ("conclusions" in result and result["conclusions"]):
+                    col1, col2 = st.columns(2)
+                    
+                    # Display Key Topics/Themes if available
+                    if "topics" in result and result["topics"]:
+                        with col1:
+                            st.subheader("Key Topics/Themes")
+                            for topic in result["topics"]:
+                                st.markdown(f"🔹 {topic}")
+                    
+                    # Display Main Conclusions/Takeaways if available
+                    if "conclusions" in result and result["conclusions"]:
+                        with col2:
+                            st.subheader("Main Conclusions/Takeaways")
+                            for i, conclusion in enumerate(result["conclusions"], 1):
+                                st.markdown(f"**{i}.** {conclusion}")
+                
             elif "summary" in result:
                 # Legacy format with just one summary
-                st.write(result["summary"])
+                st.markdown(f"<div style='background-color:#f0f2f6;padding:15px;border-radius:5px;'>{result['summary']}</div>", unsafe_allow_html=True)
             else:
                 st.write("Unknown summary format")
         else:
             # Handle legacy string format
-            st.write(result)
+            st.markdown(f"<div style='background-color:#f0f2f6;padding:15px;border-radius:5px;'>{result}</div>", unsafe_allow_html=True)
     elif result_type == "proofreading":
         st.subheader("Proofreading Results")
         st.write(result)

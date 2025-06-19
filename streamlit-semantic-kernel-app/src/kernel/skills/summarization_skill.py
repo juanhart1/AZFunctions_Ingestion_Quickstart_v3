@@ -107,17 +107,29 @@ class SummarizationSkill:
                 summary_data = json.loads(summary_content)
                 print(f"DEBUG: Successfully parsed JSON from blob. Keys: {list(summary_data.keys())}")
                 
-                # Format the summary
-                if "summary" in summary_data:
-                    if isinstance(summary_data["summary"], dict):
-                        # Handle new format with executive and detailed summaries
+                # Handle the specific structure format provided in the example
+                if "summary" in summary_data and isinstance(summary_data["summary"], dict):
+                    summary_section = summary_data["summary"]
+                    
+                    # Check for the specific format with Executive Summary, Detailed Summary, etc.
+                    if "Executive Summary" in summary_section and "Detailed Summary" in summary_section:
                         return {
-                            "executive": summary_data["summary"].get("executive_summary", "No executive summary available."),
-                            "detailed": summary_data["summary"].get("detailed_summary", "No detailed summary available.")
+                            "executive": summary_section.get("Executive Summary", "No executive summary available."),
+                            "detailed": summary_section.get("Detailed Summary", "No detailed summary available."),
+                            "topics": summary_section.get("Key Topics/Themes", []),
+                            "conclusions": summary_section.get("Main Conclusions/Takeaways", []),
+                            "source_file": summary_data.get("sourcefile", ""),
+                            "generated_date": summary_data.get("generated_date", "")
+                        }
+                    # Handle the previous expected format
+                    elif "executive_summary" in summary_section and "detailed_summary" in summary_section:
+                        return {
+                            "executive": summary_section.get("executive_summary", "No executive summary available."),
+                            "detailed": summary_section.get("detailed_summary", "No detailed summary available.")
                         }
                     else:
-                        # Handle legacy format with single summary
-                        return {"summary": summary_data["summary"]}
+                        # Return what we have in the summary section
+                        return {"summary": summary_section}
                 elif "executive_summary" in summary_data and "detailed_summary" in summary_data:
                     # The summary might be at the root level
                     return {
