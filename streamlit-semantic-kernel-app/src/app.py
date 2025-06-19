@@ -8,7 +8,7 @@ from kernel.config import load_semantic_kernel
 from kernel.skills.qa_skill import QASkill
 from kernel.skills.summarization_skill import SummarizationSkill
 from kernel.skills.proofreading_skill import ProofreadingSkill
-from utils.helpers import display_file_selector, display_result
+from utils.helpers import display_file_selector, display_result, display_file_uploader
 
 # Load environment variables
 load_dotenv()
@@ -27,6 +27,7 @@ This application uses Azure AI services to process documents. You can:
 - Ask questions about documents (RAG with Azure AI Search)
 - Get document summaries
 - Check documents for grammar and spelling issues
+- Upload new PDF documents to Azure Storage
 """)
 
 # Initialize Semantic Kernel via our adapter
@@ -42,7 +43,7 @@ with st.sidebar:
     st.header("Select Functionality")
     functionality = st.radio(
         "What would you like to do?",
-        options=["Q&A", "Summarization", "Proofreading"],
+        options=["Q&A", "Summarization", "Proofreading", "Upload Document"],
         index=0
     )
 
@@ -86,7 +87,7 @@ elif functionality == "Summarization":
                 # Display the summary
                 display_result(summary, "summarization")
 
-else:  # Proofreading
+elif functionality == "Proofreading":
     st.header("Document Proofreading")
     
     # Display file selector for proofreading
@@ -103,6 +104,30 @@ else:  # Proofreading
                 
                 # Display the proofreading results
                 display_result(proofreading_results, "proofreading")
+
+elif functionality == "Upload Document":
+    st.header("Upload Document")
+    
+    # Add tabs for different document types
+    upload_tab, _, _, _ = st.tabs(["General Documents", "Q&A Documents", "Summarization Documents", "Proofreading Documents"])
+    
+    with upload_tab:
+        st.subheader("Upload a document to Azure Storage")
+        
+        # Display the file uploader
+        upload_success, document_id = display_file_uploader(
+            container_name=os.environ.get("DOCUMENTS_CONTAINER", "documents"),
+            connection_string_var="AZURE_STORAGE_CONNECTION_STRING",
+            key="general_uploader"
+        )
+        
+        if upload_success:
+            # Display the document ID and instructions
+            st.info(f"""
+            Your document has been uploaded with ID: **{document_id}**
+            
+            You can now select this document in the file selector when using the other functionalities.
+            """)
 
 # Footer
 st.markdown("---")

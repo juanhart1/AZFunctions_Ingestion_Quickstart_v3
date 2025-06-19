@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import json
 from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
+from utils.file_upload import upload_file_to_blob
 
 def display_file_selector(container_name, connection_string_var):
     """
@@ -55,6 +56,49 @@ def display_file_selector(container_name, connection_string_var):
     else:
         st.info("No documents found in the container")
         return None
+
+def display_file_uploader(container_name, connection_string_var, key=None):
+    """
+    Display a file uploader for uploading PDFs to Azure Blob Storage.
+    
+    Args:
+        container_name: The name of the blob container
+        connection_string_var: The environment variable containing the connection string
+        key: Optional key for the Streamlit file_uploader widget
+        
+    Returns:
+        Tuple of (success, document_id) where success is a boolean and document_id is the ID of the uploaded document
+    """
+    # Create the file uploader widget
+    uploaded_file = st.file_uploader(
+        "Upload a PDF document", 
+        type=["pdf"], 
+        key=key,
+        help="Upload a PDF file to process. The file will be stored in Azure Blob Storage."
+    )
+    
+    if uploaded_file is not None:
+        # Display a preview of the file
+        st.write(f"Selected file: **{uploaded_file.name}**")
+        
+        # Add an upload button
+        if st.button("Upload to Azure", key=f"upload_btn_{key}"):
+            with st.spinner("Uploading file to Azure..."):
+                # Upload the file using our utility function
+                success, document_id, error_message = upload_file_to_blob(
+                    uploaded_file=uploaded_file,
+                    container_name=container_name,
+                    connection_string_var=connection_string_var
+                )
+                
+                if success:
+                    st.success(f"File uploaded successfully! Document ID: {document_id}")
+                    return True, document_id
+                else:
+                    st.error(error_message)
+                    return False, None
+    
+    return False, None
 
 def display_result(result, result_type):
     """
