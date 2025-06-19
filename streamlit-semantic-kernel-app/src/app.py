@@ -116,6 +116,11 @@ elif functionality == "Proofreading":
                 # Get the proofreading results using the Proofreading skill
                 proofreading_results = proofreading_skill.get_proofread(document_id)
                 
+                # Check if we need to synthesize results
+                if "error" in proofreading_results and "not found" in proofreading_results["error"]:
+                    st.info("No proofreading results found for this document. Synthesizing results...")
+                    proofreading_results = proofreading_skill.synthesize_proofreading_results(document_id)
+                
                 # Display the proofreading results
                 display_result(proofreading_results, "proofreading")
 

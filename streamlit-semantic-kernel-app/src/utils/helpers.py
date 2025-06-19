@@ -232,7 +232,81 @@ def display_result(result, result_type):
             </div>
             """, unsafe_allow_html=True)
     elif result_type == "proofreading":
-        st.subheader("Proofreading Results")
-        st.write(result)
+        st.header("Proofreading Results")
+        
+        # Add horizontal rule for better visual separation
+        st.markdown("---")
+        
+        # Check if result is a dict with the updated format
+        if isinstance(result, dict):
+            if "error" in result:
+                st.error(result["error"])
+            else:
+                # Create a container for the metadata
+                meta_col1, meta_col2 = st.columns(2)
+                
+                # Display document info if available
+                if "source_file" in result and result["source_file"]:
+                    meta_col1.info(f"📄 **Source**: {result['source_file']}")
+                
+                # Show total issues summary
+                total_issues = result.get("total_issues", 0)
+                if total_issues > 0:
+                    meta_col2.warning(f"Found {total_issues} potential issues in this document")
+                else:
+                    meta_col2.success("No issues found in this document")
+                
+                # Create tabs for different issue categories
+                categories = [
+                    ("grammar_issues", "Grammar Issues 🔤", "grammar"),
+                    ("spelling_issues", "Spelling Issues 📝", "spelling"),
+                    ("clarity_issues", "Clarity Issues 🔍", "clarity"),
+                    ("style_issues", "Style Issues ✒️", "style"),
+                    ("other_issues", "Other Issues ❓", "other")
+                ]
+                
+                # Filter out empty categories
+                active_categories = [(key, name, icon) for key, name, icon in categories if result.get(key, [])]
+                
+                if active_categories:
+                    # Create tabs only for categories that have issues
+                    tabs = st.tabs([name + f" ({len(result.get(key, []))})" for key, name, _ in active_categories])
+                    
+                    # Display issues in each tab
+                    for i, (category_key, category_name, icon) in enumerate(active_categories):
+                        issues = result.get(category_key, [])
+                        with tabs[i]:
+                            for j, issue in enumerate(issues, 1):
+                                st.markdown(f"""
+                                <div style='
+                                    background-color: rgba(0, 0, 0, 0.05); 
+                                    color: inherit; 
+                                    padding: 15px; 
+                                    border-radius: 5px; 
+                                    border: 1px solid rgba(128, 128, 128, 0.2);
+                                    box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+                                    margin-bottom: 10px;
+                                '>
+                                    <p><strong>Issue {j}:</strong></p>
+                                    <p><strong>Original: </strong><span style='color: var(--theme-danger-text-color, #d62728);'>{issue.get('original', 'N/A')}</span></p>
+                                    <p><strong>Suggestion: </strong><span style='color: var(--theme-success-text-color, #15b78f);'>{issue.get('suggestion', 'N/A')}</span></p>
+                                    <p><strong>Context: </strong>"<em>{issue.get('context', 'N/A')}</em>"</p>
+                                    <p><strong>Explanation: </strong>{issue.get('explanation', 'N/A')}</p>
+                                </div>
+                                """, unsafe_allow_html=True)
+        else:
+            # Handle legacy string format
+            st.markdown(f"""
+            <div style='
+                background-color: rgba(0, 0, 0, 0.05); 
+                color: inherit; 
+                padding: 15px; 
+                border-radius: 5px; 
+                border: 1px solid rgba(128, 128, 128, 0.2);
+                box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+            '>
+                {result}
+            </div>
+            """, unsafe_allow_html=True)
     else:
         st.write(result)
