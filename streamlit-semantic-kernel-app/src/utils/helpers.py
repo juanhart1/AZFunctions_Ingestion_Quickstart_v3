@@ -143,14 +143,36 @@ def display_result(result, result_type):
                 
                 # Display executive summary
                 st.subheader("Executive Summary")
-                st.markdown(f"<div style='background-color:#f0f2f6;padding:15px;border-radius:5px;'>{result['executive']}</div>", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div style='
+                    background-color: rgba(0, 0, 0, 0.05); 
+                    color: inherit; 
+                    padding: 15px; 
+                    border-radius: 5px; 
+                    border: 1px solid rgba(128, 128, 128, 0.2);
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+                '>
+                    {result['executive']}
+                </div>
+                """, unsafe_allow_html=True)
                 
                 # Add some space
                 st.markdown("<br>", unsafe_allow_html=True)
                 
                 # Display detailed summary
                 st.subheader("Detailed Summary")
-                st.markdown(f"<div style='background-color:#f0f2f6;padding:15px;border-radius:5px;'>{result['detailed']}</div>", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div style='
+                    background-color: rgba(0, 0, 0, 0.05); 
+                    color: inherit; 
+                    padding: 15px; 
+                    border-radius: 5px; 
+                    border: 1px solid rgba(128, 128, 128, 0.2);
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+                '>
+                    {result['detailed']}
+                </div>
+                """, unsafe_allow_html=True)
                 
                 # Add some space
                 st.markdown("<br>", unsafe_allow_html=True)
@@ -163,24 +185,52 @@ def display_result(result, result_type):
                     if "topics" in result and result["topics"]:
                         with col1:
                             st.subheader("Key Topics/Themes")
+                            topics_html = "<div style='background-color: rgba(0, 0, 0, 0.05); padding: 15px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);'>"
                             for topic in result["topics"]:
-                                st.markdown(f"🔹 {topic}")
+                                topics_html += f"<p style='margin-bottom: 8px; color: inherit;'>🔹 {topic}</p>"
+                            topics_html += "</div>"
+                            st.markdown(topics_html, unsafe_allow_html=True)
                     
                     # Display Main Conclusions/Takeaways if available
                     if "conclusions" in result and result["conclusions"]:
                         with col2:
                             st.subheader("Main Conclusions/Takeaways")
+                            conclusions_html = "<div style='background-color: rgba(0, 0, 0, 0.05); padding: 15px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);'>"
                             for i, conclusion in enumerate(result["conclusions"], 1):
-                                st.markdown(f"**{i}.** {conclusion}")
+                                conclusions_html += f"<p style='margin-bottom: 8px; color: inherit;'><strong>{i}.</strong> {conclusion}</p>"
+                            conclusions_html += "</div>"
+                            st.markdown(conclusions_html, unsafe_allow_html=True)
                 
             elif "summary" in result:
                 # Legacy format with just one summary
-                st.markdown(f"<div style='background-color:#f0f2f6;padding:15px;border-radius:5px;'>{result['summary']}</div>", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div style='
+                    background-color: rgba(0, 0, 0, 0.05); 
+                    color: inherit; 
+                    padding: 15px; 
+                    border-radius: 5px; 
+                    border: 1px solid rgba(128, 128, 128, 0.2);
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+                '>
+                    {result['summary']}
+                </div>
+                """, unsafe_allow_html=True)
             else:
                 st.write("Unknown summary format")
         else:
             # Handle legacy string format
-            st.markdown(f"<div style='background-color:#f0f2f6;padding:15px;border-radius:5px;'>{result}</div>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style='
+                background-color: rgba(0, 0, 0, 0.05); 
+                color: inherit; 
+                padding: 15px; 
+                border-radius: 5px; 
+                border: 1px solid rgba(128, 128, 128, 0.2);
+                box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+            '>
+                {result}
+            </div>
+            """, unsafe_allow_html=True)
     elif result_type == "proofreading":
         st.subheader("Proofreading Results")
         st.write(result)
