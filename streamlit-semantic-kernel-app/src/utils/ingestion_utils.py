@@ -48,6 +48,10 @@ def trigger_ingestion_workflow(
         if not index_name:
             index_name = os.environ.get("DEFAULT_INDEX_NAME", "test-index-20250603184251")
             
+        # Print debug information
+        print(f"Triggering ingestion at URL: {function_url}")
+        print(f"Document path: {document_path}")
+            
         # Prepare the request payload
         payload = {
             "source_container": source_container,
@@ -63,20 +67,38 @@ def trigger_ingestion_workflow(
             "cosmos_logging": cosmos_logging
         }
         
+        # Print payload for debugging
+        print(f"Request payload: {json.dumps(payload, indent=2)}")
+        
         # Make the HTTP request to the function endpoint
         response = requests.post(
             function_url,
             json=payload,
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
+            timeout=30  # Add a timeout to avoid hanging
         )
+        
+        # Print response information for debugging
+        print(f"Response status code: {response.status_code}")
+        print(f"Response headers: {response.headers}")
+        print(f"Response content: {response.text[:500]}...")  # Print first 500 chars of response
         
         # Check if the request was successful
         if response.status_code in (200, 201, 202):
-            return {
-                "success": True,
-                "data": response.json() if response.text else {"message": "Ingestion process started"},
-                "status_code": response.status_code
-            }
+            try:
+                response_data = response.json() if response.text else {"message": "Ingestion process started"}
+                return {
+                    "success": True,
+                    "data": response_data,
+                    "status_code": response.status_code
+                }
+            except json.JSONDecodeError:
+                return {
+                    "success": True,
+                    "data": {"message": "Ingestion process started (non-JSON response)"},
+                    "status_code": response.status_code,
+                    "raw_response": response.text[:1000] if response.text else None
+                }
         else:
             return {
                 "success": False,
@@ -84,10 +106,22 @@ def trigger_ingestion_workflow(
                 "status_code": response.status_code
             }
             
-    except Exception as e:
+    except requests.exceptions.Timeout:
         return {
             "success": False,
-            "error": f"Exception occurred: {str(e)}"
+            "error": "Request timed out. The function endpoint might be unavailable or taking too long to respond."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "success": False,
+            "error": "Connection error. Make sure the function is running and accessible at the configured URL."
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": f"Exception occurred: {str(e)}",
+            "traceback": traceback.format_exc()
         }
         
 def display_ingestion_params_form():

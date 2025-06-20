@@ -204,8 +204,29 @@ def display_file_uploader(container_name, connection_string_var, key=None):
                                     "blob_name": blob_name,
                                     "timestamp": datetime.now().isoformat()
                                 }
+                                
+                                # If there's raw response data, also store that for debugging
+                                if "raw_response" in ingestion_result:
+                                    st.session_state[f"ingestion_status_{document_id}"]["raw_response"] = ingestion_result["raw_response"]
+                                
                             else:
                                 st.error(f"Failed to trigger ingestion: {ingestion_result.get('error', 'Unknown error')}")
+                                # Still store the status but mark as failed
+                                st.session_state[f"ingestion_status_{document_id}"] = {
+                                    "status": "failed",
+                                    "document_id": document_id,
+                                    "blob_name": blob_name,
+                                    "timestamp": datetime.now().isoformat(),
+                                    "error": ingestion_result.get('error', 'Unknown error')
+                                }
+                                
+                                # Display a troubleshooting message
+                                st.info("""
+                                **Troubleshooting steps:**
+                                1. Check if the Azure Functions app is running (local or deployed)
+                                2. Verify the function URL in the .env file
+                                3. Check the Azure Functions logs for more details
+                                """)
                     
                     return True, document_id
                 else:
@@ -443,19 +464,60 @@ def display_ingestion_status():
         blob_name = status_data.get("blob_name", "Unknown")
         timestamp = status_data.get("timestamp", "Unknown")
         status = status_data.get("status", "Unknown")
+        error_message = status_data.get("error", None)
         
         # Create a unique key for each status
         status_key = f"status_{doc_id}"
         
-        with st.expander(f"Document: {blob_name} (ID: {doc_id})"):
-            st.write(f"**Status:** {status}")
+        # Choose color based on status
+        if status == "started":
+            status_color = "blue"
+            status_icon = "🔄"
+        elif status == "completed":
+            status_color = "green" 
+            status_icon = "✅"
+        elif status == "failed":
+            status_color = "red"
+            status_icon = "❌"
+        else:
+            status_color = "orange"
+            status_icon = "❓"
+        
+        with st.expander(f"{status_icon} Document: {blob_name} (ID: {doc_id})"):
+            st.markdown(f"**Status:** <span style='color:{status_color};'>{status}</span>", unsafe_allow_html=True)
             st.write(f"**Started:** {timestamp}")
+            
+            # Display error message if there is one
+            if error_message:
+                st.error(f"**Error:** {error_message}")
+                
+                # Add helpful suggestions based on common errors
+                if "Connection error" in error_message:
+                    st.info("""
+                    **Troubleshooting suggestions:**
+                    1. Make sure the Azure Function app is running locally or deployed
+                    2. Check the INGESTION_FUNCTION_URL in your .env file
+                    3. If you're running functions locally, try `func start` in the terminal
+                    """)
+                elif "timed out" in error_message:
+                    st.info("""
+                    **Troubleshooting suggestions:**
+                    1. The function might be taking longer than expected
+                    2. Check function logs for errors or long-running operations
+                    3. Try increasing the timeout in the ingestion_utils.py file
+                    """)
+            
+            # Add details expander for raw response if available
+            if status_data.get("raw_response"):
+                with st.expander("Response Details"):
+                    st.code(status_data.get("raw_response"), language="text")
             
             # Add refresh button to check current status
             if st.button("Refresh Status", key=f"refresh_{doc_id}"):
-                st.info("Refreshing status... (In a production app, this would check the actual status)")
-                # In a real implementation, you would make an API call to check the status
-                # For now, we'll just simulate the check
+                # In a real implementation, this would check the actual status with the Azure Function
+                st.info("Refreshing status... (This would check the status with the Azure Function)")
+                # For now, we'll just update the timestamp to show the refresh happened
+                st.session_state[key]["last_checked"] = datetime.now().isoformat()
                 
             # Add option to clear this status from the display
             if st.button("Clear", key=f"clear_{doc_id}"):

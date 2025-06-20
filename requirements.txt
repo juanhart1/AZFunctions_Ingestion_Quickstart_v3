@@ -3,6 +3,7 @@
 # Manually managing azure-functions-worker may cause unexpected issues
 
 azure-functions
+azure-functions-durable
 azure-storage-blob
 azure-cosmos
 azure-identity
@@ -11,7 +12,7 @@ azure-search-documents==11.4.0b8
 azure-ai-documentintelligence
 azure-ai-formrecognizer
 azure-cognitiveservices-vision-computervision
-azure-ai-vision
+# azure-ai-vision  # Commented out due to package availability issues
 azure-keyvault-secrets
 azure-core
 openai
