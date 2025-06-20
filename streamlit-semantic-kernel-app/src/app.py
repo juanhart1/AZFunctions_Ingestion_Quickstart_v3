@@ -8,7 +8,7 @@ from kernel.config import load_semantic_kernel
 from kernel.skills.qa_skill import QASkill
 from kernel.skills.summarization_skill import SummarizationSkill
 from kernel.skills.proofreading_skill import ProofreadingSkill
-from utils.helpers import display_file_selector, display_result, display_file_uploader
+from utils.helpers import display_file_selector, display_result, display_file_uploader, display_ingestion_status
 
 # Load environment variables
 load_dotenv()
@@ -134,19 +134,21 @@ elif functionality == "Upload Document":
         st.subheader("Upload a document to Azure Storage")
         
         # Display the file uploader
-        upload_success, document_id = display_file_uploader(
-            container_name=os.environ.get("DOCUMENTS_CONTAINER", "documents"),
-            connection_string_var="AZURE_STORAGE_CONNECTION_STRING",
-            key="general_uploader"
-        )
+        upload_success, document_id = display_file_uploader(        container_name=os.environ.get("DOCUMENTS_CONTAINER", "documents"),
+        connection_string_var="AZURE_STORAGE_CONNECTION_STRING",
+        key="general_uploader"
+    )
+    
+    if upload_success:
+        # Display the document ID and instructions
+        st.info(f"""
+        Your document has been uploaded with ID: **{document_id}**
         
-        if upload_success:
-            # Display the document ID and instructions
-            st.info(f"""
-            Your document has been uploaded with ID: **{document_id}**
-            
-            You can now select this document in the file selector when using the other functionalities.
-            """)
+        You can now select this document in the file selector when using the other functionalities.
+        """)
+    
+    # Display status of any ongoing ingestion processes
+    display_ingestion_status()
 
 # Footer
 st.markdown("---")

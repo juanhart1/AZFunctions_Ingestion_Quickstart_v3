@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import json
+from datetime import datetime
 from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
 from utils.file_upload import upload_file_to_blob
 
@@ -81,6 +82,15 @@ def display_file_uploader(container_name, connection_string_var, key=None):
         # Display a preview of the file
         st.write(f"Selected file: **{uploaded_file.name}**")
         
+        # Add checkbox for immediate ingestion
+        trigger_ingestion = st.checkbox("Trigger ingestion after upload", value=True, 
+                                       help="Start the ingestion process immediately after upload")
+        
+        # Import ingestion_utils for ingestion configuration if needed
+        if trigger_ingestion:
+            from utils.ingestion_utils import display_ingestion_params_form
+            ingestion_params = display_ingestion_params_form()
+        
         # Add an upload button
         if st.button("Upload to Azure", key=f"upload_btn_{key}"):
             with st.spinner("Uploading file to Azure..."):
@@ -93,6 +103,36 @@ def display_file_uploader(container_name, connection_string_var, key=None):
                 
                 if success:
                     st.success(f"File uploaded successfully! Document ID: {document_id}")
+                    
+                    # Trigger ingestion if requested
+                    if trigger_ingestion:
+                        from utils.ingestion_utils import trigger_ingestion_workflow
+                        
+                        # Get the blob name (document_id_filename.pdf format)
+                        blob_name = f"{document_id}_{uploaded_file.name}"
+                        
+                        with st.spinner("Triggering document ingestion..."):
+                            # Use saved params or defaults
+                            params = ingestion_params if ingestion_params else {}
+                            
+                            # Trigger the ingestion workflow
+                            ingestion_result = trigger_ingestion_workflow(
+                                document_path=blob_name,
+                                **params
+                            )
+                            
+                            if ingestion_result.get("success", False):
+                                st.success("Document ingestion process started successfully!")
+                                # Store the ingestion status in session state for tracking
+                                st.session_state[f"ingestion_status_{document_id}"] = {
+                                    "status": "started",
+                                    "document_id": document_id,
+                                    "blob_name": blob_name,
+                                    "timestamp": datetime.now().isoformat()
+                                }
+                            else:
+                                st.error(f"Failed to trigger ingestion: {ingestion_result.get('error', 'Unknown error')}")
+                    
                     return True, document_id
                 else:
                     st.error(error_message)
@@ -310,3 +350,40 @@ def display_result(result, result_type):
             """, unsafe_allow_html=True)
     else:
         st.write(result)
+
+def display_ingestion_status():
+    """
+    Display the status of ongoing and completed ingestion processes.
+    """
+    # Filter session state keys to find ingestion status entries
+    ingestion_keys = [k for k in st.session_state.keys() if k.startswith("ingestion_status_")]
+    
+    if not ingestion_keys:
+        return
+        
+    st.subheader("Document Ingestion Status")
+    
+    for key in ingestion_keys:
+        status_data = st.session_state[key]
+        doc_id = status_data.get("document_id", "Unknown")
+        blob_name = status_data.get("blob_name", "Unknown")
+        timestamp = status_data.get("timestamp", "Unknown")
+        status = status_data.get("status", "Unknown")
+        
+        # Create a unique key for each status
+        status_key = f"status_{doc_id}"
+        
+        with st.expander(f"Document: {blob_name} (ID: {doc_id})"):
+            st.write(f"**Status:** {status}")
+            st.write(f"**Started:** {timestamp}")
+            
+            # Add refresh button to check current status
+            if st.button("Refresh Status", key=f"refresh_{doc_id}"):
+                st.info("Refreshing status... (In a production app, this would check the actual status)")
+                # In a real implementation, you would make an API call to check the status
+                # For now, we'll just simulate the check
+                
+            # Add option to clear this status from the display
+            if st.button("Clear", key=f"clear_{doc_id}"):
+                del st.session_state[key]
+                st.rerun()
