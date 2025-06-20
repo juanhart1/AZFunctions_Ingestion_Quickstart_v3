@@ -46,6 +46,9 @@ class ProofreadingSkill:
         """
         Retrieve the proofreading results for a document from Azure Blob Storage.
         
+        Files are stored with document_id as a prefix: "{document_id}_proofread.json"
+        Legacy format support is maintained for: "{document_id}/proofread.json"
+        
         Args:
             document_id: The ID of the document to proofread
             
@@ -59,8 +62,8 @@ class ProofreadingSkill:
             return {"error": "Error: No document ID provided."}
         
         try:
-            # Construct the expected blob path
-            blob_path = f"{document_id}/proofread.json"
+            # Construct the expected blob path (new format: document_id_proofread.json)
+            blob_path = f"{document_id}_proofread.json"
             
             # Get the proofreading blob client
             blob_client = self.container_client.get_blob_client(blob_path)
@@ -69,9 +72,13 @@ class ProofreadingSkill:
             if not blob_client.exists():
                 print(f"DEBUG: Proofreading blob not found at path: {blob_path}")
                 
-                # Try alternative paths
+                # Try alternative paths - support both new and legacy formats
                 alternative_paths = [
-                    document_id,  # The document_id itself is the blob name
+                    # New format
+                    f"{document_id}_proofread.json",
+                    # Legacy formats
+                    f"{document_id}/proofread.json",
+                    document_id,  
                     f"proofread_{document_id}.json",  
                     f"{document_id.replace(' ', '_')}/proofread.json",  
                     f"{document_id}.json"  

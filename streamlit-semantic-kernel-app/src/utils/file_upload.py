@@ -8,6 +8,9 @@ def upload_file_to_blob(uploaded_file, container_name, connection_string_var=Non
     """
     Upload a file to Azure Blob Storage.
     
+    Files are stored directly in the container root with document_id as a prefix for uniqueness.
+    Example: "doc_1234567_unique_id_filename.pdf" instead of "doc_1234567_unique_id/filename.pdf"
+    
     Args:
         uploaded_file: The file uploaded through Streamlit's file_uploader
         container_name: The name of the container to upload to
@@ -45,9 +48,10 @@ def upload_file_to_blob(uploaded_file, container_name, connection_string_var=Non
         unique_id = str(uuid.uuid4())[:8]
         document_id = f"doc_{timestamp}_{unique_id}"
         
-        # Create the blob name with the document ID as a prefix for organization
+        # Store files directly in container root with document_id as prefix for uniqueness
         file_extension = uploaded_file.name.split('.')[-1].lower()
-        blob_name = f"{document_id}/{uploaded_file.name}"
+        # Use document_id as prefix to avoid filename collisions
+        blob_name = f"{document_id}_{uploaded_file.name}"
         
         # Create a blob client and upload the file
         blob_client = container_client.get_blob_client(blob_name)
@@ -72,8 +76,8 @@ def upload_file_to_blob(uploaded_file, container_name, connection_string_var=Non
             "size_bytes": len(uploaded_file.getvalue())
         }
         
-        # Upload the metadata file
-        metadata_blob_client = container_client.get_blob_client(f"{document_id}/metadata.json")
+        # Upload the metadata file (also in root container with document_id prefix)
+        metadata_blob_client = container_client.get_blob_client(f"{document_id}_metadata.json")
         metadata_blob_client.upload_blob(
             str(metadata).encode('utf-8'),
             content_settings=ContentSettings(content_type="application/json"),

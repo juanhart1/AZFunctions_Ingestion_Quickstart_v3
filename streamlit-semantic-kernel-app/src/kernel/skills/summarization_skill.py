@@ -42,6 +42,9 @@ class SummarizationSkill:
         """
         Retrieve the summary for a document from Azure Blob Storage.
         
+        Files are stored with document_id as a prefix: "{document_id}_summary.json"
+        Legacy format support is maintained for: "{document_id}/summary.json"
+        
         Args:
             document_id: The ID of the document to summarize
             
@@ -55,8 +58,8 @@ class SummarizationSkill:
             return {"error": "Error: No document ID provided."}
         
         try:
-            # Construct the expected blob path
-            blob_path = f"{document_id}/summary.json"
+            # Construct the expected blob path (new format: document_id_summary.json)
+            blob_path = f"{document_id}_summary.json"
             
             # Get the summary blob client
             blob_client = self.container_client.get_blob_client(blob_path)
@@ -65,9 +68,13 @@ class SummarizationSkill:
             if not blob_client.exists():
                 print(f"DEBUG: Summary blob not found at path: {blob_path}")
                 
-                # Try alternative paths - based on logs, the document_id itself is the blob name
+                # Try alternative paths - support both new and legacy formats
                 alternative_paths = [
-                    document_id,  # The document_id itself is the blob name (based on logs)
+                    # New format
+                    f"{document_id}_summary.json",
+                    # Legacy formats
+                    f"{document_id}/summary.json",
+                    document_id,
                     f"summary_{document_id}.json",  
                     f"{document_id.replace(' ', '_')}/summary.json",  
                     f"{document_id}.json"  
