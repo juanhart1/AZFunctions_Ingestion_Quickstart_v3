@@ -84,9 +84,11 @@ def display_file_uploader(container_name, connection_string_var, key=None):
         
         # Add checkbox for immediate ingestion
         trigger_ingestion = st.checkbox("Trigger ingestion after upload", value=True, 
-                                       help="Start the ingestion process immediately after upload")
+                                       help="Start the ingestion process immediately after upload",
+                                       key=f"trigger_ingestion_{key}")
         
         # Import ingestion_utils for ingestion configuration if needed
+        ingestion_params = None
         if trigger_ingestion:
             from utils.ingestion_utils import display_ingestion_params_form
             ingestion_params = display_ingestion_params_form()
@@ -112,13 +114,10 @@ def display_file_uploader(container_name, connection_string_var, key=None):
                         blob_name = f"{document_id}_{uploaded_file.name}"
                         
                         with st.spinner("Triggering document ingestion..."):
-                            # Use saved params or defaults
-                            params = ingestion_params if ingestion_params else {}
-                            
-                            # Trigger the ingestion workflow
+                            # Use the parameters from session state
                             ingestion_result = trigger_ingestion_workflow(
                                 document_path=blob_name,
-                                **params
+                                **(ingestion_params or {})
                             )
                             
                             if ingestion_result.get("success", False):

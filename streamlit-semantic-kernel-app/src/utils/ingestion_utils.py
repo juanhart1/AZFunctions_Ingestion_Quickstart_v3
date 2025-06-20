@@ -9,7 +9,7 @@ def trigger_ingestion_workflow(
     extract_container: str = "rtx-transcripts-extract",
     index_name: str = None,
     automatically_delete: bool = False,
-    analyze_images: bool = True,
+    analyze_images: bool = False,
     overlapping_chunks: bool = True,
     chunk_size: int = 600,
     overlap: int = 200,
@@ -98,62 +98,100 @@ def display_ingestion_params_form():
         A dictionary containing the ingestion parameters if the form is submitted,
         None otherwise.
     """
+    # Initialize session state for storing ingestion params if it doesn't exist
+    if "ingestion_settings" not in st.session_state:
+        st.session_state.ingestion_settings = {
+            "index_name": os.environ.get("DEFAULT_INDEX_NAME", "test-index-1-20250604155829"),
+            "automatically_delete": False,
+            "analyze_images": False,  # Set to False by default
+            "overlapping_chunks": True,
+            "chunk_size": 600,
+            "overlap": 200,
+            "embedding_model": "text-embedding-3-large",
+            "cosmos_logging": False
+        }
+    
     with st.expander("Advanced Ingestion Settings", expanded=False):
-        with st.form("ingestion_params"):
-            # Get available indexes or use a default
-            default_index = os.environ.get("DEFAULT_INDEX_NAME", "test-index-20250603184251")
+        # Get available indexes or use a default
+        default_index = os.environ.get("DEFAULT_INDEX_NAME", "test-index-20250603184251")
+        
+        # Try to get a list of indexes (this would be implemented based on your system)
+        # In a real implementation, you might fetch this from Azure Search
+        try:
+            available_indexes = [default_index]  # Placeholder - would be populated from API
+        except:
+            available_indexes = [default_index]
+        
+        # Use columns for better layout
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.session_state.ingestion_settings["index_name"] = st.selectbox(
+                "Index Name", 
+                options=available_indexes,
+                index=0,
+                key="ingestion_index_name"
+            )
             
-            # Try to get a list of indexes (this would be implemented based on your system)
-            # In a real implementation, you might fetch this from Azure Search
-            try:
-                available_indexes = [default_index]  # Placeholder - would be populated from API
-            except:
-                available_indexes = [default_index]
-                
-            col1, col2 = st.columns(2)
+            st.session_state.ingestion_settings["analyze_images"] = st.checkbox(
+                "Analyze Images", 
+                value=st.session_state.ingestion_settings.get("analyze_images", False),  # Default to False
+                key="ingestion_analyze_images"
+            )
             
-            with col1:
-                index_name = st.selectbox(
-                    "Index Name", 
-                    options=available_indexes,
-                    index=0
-                )
-                
-                analyze_images = st.checkbox("Analyze Images", value=True)
-                overlapping_chunks = st.checkbox("Overlapping Chunks", value=True)
-                
-            with col2:
-                chunk_size = st.number_input("Chunk Size", value=600, min_value=100, max_value=2000)
-                overlap = st.number_input("Overlap", value=200, min_value=0, max_value=chunk_size-100)
-                
-                embedding_models = ["text-embedding-3-large", "text-embedding-3-small", "text-embedding-ada-002"]
-                embedding_model = st.selectbox("Embedding Model", options=embedding_models, index=0)
+            st.session_state.ingestion_settings["overlapping_chunks"] = st.checkbox(
+                "Overlapping Chunks", 
+                value=st.session_state.ingestion_settings.get("overlapping_chunks", True),
+                key="ingestion_overlapping_chunks"
+            )
             
-            # Additional options
-            col1, col2 = st.columns(2)
-            with col1:
-                automatically_delete = st.checkbox("Auto-delete Source", value=False)
-            with col2:
-                cosmos_logging = st.checkbox("Cosmos Logging", value=False)
-                
-            submitted = st.form_submit_button("Save Settings")
+        with col2:
+            st.session_state.ingestion_settings["chunk_size"] = st.number_input(
+                "Chunk Size", 
+                value=st.session_state.ingestion_settings.get("chunk_size", 600), 
+                min_value=100, 
+                max_value=2000,
+                key="ingestion_chunk_size"
+            )
             
-            if submitted:
-                ingestion_params = {
-                    "index_name": index_name,
-                    "automatically_delete": automatically_delete,
-                    "analyze_images": analyze_images,
-                    "overlapping_chunks": overlapping_chunks,
-                    "chunk_size": chunk_size,
-                    "overlap": overlap,
-                    "embedding_model": embedding_model,
-                    "cosmos_logging": cosmos_logging
-                }
+            st.session_state.ingestion_settings["overlap"] = st.number_input(
+                "Overlap", 
+                value=st.session_state.ingestion_settings.get("overlap", 200), 
+                min_value=0, 
+                max_value=st.session_state.ingestion_settings.get("chunk_size", 600)-100,
+                key="ingestion_overlap"
+            )
+            
+            embedding_models = ["text-embedding-3-large", "text-embedding-3-small", "text-embedding-ada-002"]
+            embedding_model_index = 0
+            if st.session_state.ingestion_settings.get("embedding_model") in embedding_models:
+                embedding_model_index = embedding_models.index(st.session_state.ingestion_settings.get("embedding_model"))
                 
-                # Save to session state for persistence
-                st.session_state["ingestion_params"] = ingestion_params
-                st.success("Ingestion settings saved!")
-                return ingestion_params
-                
-            # Return current parameters if they exist, otherwise None
-            return st.session_state.get("ingestion_params", None)
+            st.session_state.ingestion_settings["embedding_model"] = st.selectbox(
+                "Embedding Model", 
+                options=embedding_models, 
+                index=embedding_model_index,
+                key="ingestion_embedding_model"
+            )
+        
+        # Additional options
+        col1, col2 = st.columns(2)
+        with col1:
+            st.session_state.ingestion_settings["automatically_delete"] = st.checkbox(
+                "Auto-delete Source", 
+                value=st.session_state.ingestion_settings.get("automatically_delete", False),
+                key="ingestion_auto_delete"
+            )
+        with col2:
+            st.session_state.ingestion_settings["cosmos_logging"] = st.checkbox(
+                "Cosmos Logging", 
+                value=st.session_state.ingestion_settings.get("cosmos_logging", False),
+                key="ingestion_cosmos_logging"
+            )
+        
+        # Button to apply settings
+        if st.button("Apply Settings", key="apply_ingestion_settings"):
+            st.success("Ingestion settings applied!")
+        
+        # Return the current ingestion settings
+        return st.session_state.ingestion_settings
