@@ -8,7 +8,8 @@ from kernel.config import load_semantic_kernel
 from kernel.skills.qa_skill import QASkill
 from kernel.skills.summarization_skill import SummarizationSkill
 from kernel.skills.proofreading_skill import ProofreadingSkill
-from utils.helpers import display_file_selector, display_result, display_file_uploader, display_ingestion_status
+from kernel.skills.comparison_skill import ComparisonSkill
+from utils.helpers import display_file_selector, display_result, display_file_uploader, display_ingestion_status, display_multi_file_selector
 
 # Load environment variables
 load_dotenv()
@@ -27,6 +28,7 @@ This application uses Azure AI services to process documents. You can:
 - Ask questions about documents (RAG with Azure AI Search)
 - Get document summaries
 - Check documents for grammar and spelling issues
+- Compare multiple documents to identify similarities and differences
 - Upload new PDF documents to Azure Storage
 """)
 
@@ -37,13 +39,14 @@ kernel_adapter = load_semantic_kernel()
 qa_skill = QASkill()
 summarization_skill = SummarizationSkill()
 proofreading_skill = ProofreadingSkill()
+comparison_skill = ComparisonSkill()
 
 # Create sidebar with functionality options
 with st.sidebar:
     st.header("Select Functionality")
     functionality = st.radio(
         "What would you like to do?",
-        options=["Q&A", "Summarization", "Proofreading", "Upload Document"],
+        options=["Q&A", "Summarization", "Proofreading", "Document Comparison", "Upload Document"],
         index=0
     )
 
@@ -123,6 +126,40 @@ elif functionality == "Proofreading":
                 
                 # Display the proofreading results
                 display_result(proofreading_results, "proofreading")
+
+elif functionality == "Document Comparison":
+    st.header("Document Comparison")
+    
+    # Display multi-file selector for document comparison
+    container_name = os.environ.get("DOCUMENTS_CONTAINER", "documents")
+    connection_string_var = "AZURE_STORAGE_CONNECTION_STRING"
+    
+    # Create a new helper function for selecting multiple documents
+    selected_document_ids = display_multi_file_selector(
+        container_name=container_name,
+        connection_string_var=connection_string_var
+    )
+    
+    if selected_document_ids and len(selected_document_ids) >= 2:
+        if st.button("Compare Selected Documents"):
+            with st.spinner("Comparing documents... This may take a minute."):
+                # Call the comparison skill
+                comparison_result = comparison_skill.compare_documents(selected_document_ids)
+                
+                # Display the result
+                st.markdown("## Comparison Results")
+                st.markdown(comparison_result)
+                
+                # Option to download the comparison
+                comparison_text = f"# Document Comparison\n\n{comparison_result}"
+                st.download_button(
+                    label="Download Comparison",
+                    data=comparison_text,
+                    file_name="document_comparison.md",
+                    mime="text/markdown"
+                )
+    else:
+        st.info("Please select at least two documents to compare.")
 
 elif functionality == "Upload Document":
     st.header("Upload Document")

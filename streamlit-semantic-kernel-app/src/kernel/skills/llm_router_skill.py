@@ -14,10 +14,11 @@ class LLMRouterSkill:
         1. qna: The user wants to ask a question about a document or retrieve specific information.
         2. summarization: The user wants a summary or overview of a document.
         3. proofreading: The user wants to check a document for grammar, spelling, or other issues.
+        4. comparison: The user wants to compare multiple documents or analyze their similarities and differences.
         
         User query: {{$query}}
         
-        Respond with only one of the following: "qna", "summarization", or "proofreading".
+        Respond with only one of the following: "qna", "summarization", "proofreading", or "comparison".
         """
     
     async def route_intent(self, query: str) -> str:
@@ -57,7 +58,7 @@ class LLMRouterSkill:
             intent = result.result.strip().lower()
             
             # Validate that the intent is one of the expected values
-            if intent not in ["qna", "summarization", "proofreading"]:
+            if intent not in ["qna", "summarization", "proofreading", "comparison"]:
                 # Fall back to rule-based classification if the LLM gives an unexpected response
                 return self._rule_based_classification(query)
             
@@ -81,6 +82,8 @@ class LLMRouterSkill:
             return "summarization"
         elif any(word in query for word in ["proofread", "grammar", "spelling", "correct", "edit", "improve", "errors"]):
             return "proofreading"
+        elif any(word in query for word in ["compare", "comparison", "difference", "similar", "similarities", "differences", "versus", "vs"]):
+            return "comparison"
         else:
             # Default to Q&A if intent is unclear
             return "qna"

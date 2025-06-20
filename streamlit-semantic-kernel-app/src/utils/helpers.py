@@ -58,6 +58,81 @@ def display_file_selector(container_name, connection_string_var):
         st.info("No documents found in the container")
         return None
 
+def display_multi_file_selector(container_name, connection_string_var):
+    """
+    Display a multi-file selector for selecting multiple documents from a blob container.
+    
+    Args:
+        container_name: The name of the blob container
+        connection_string_var: The environment variable containing the connection string
+        
+    Returns:
+        List of selected document IDs, or empty list if none are selected
+    """
+    # Get the connection string from environment variables
+    connection_string = os.environ.get(connection_string_var)
+    
+    if not connection_string:
+        st.error(f"Error: {connection_string_var} environment variable not set")
+        return []
+    
+    # Initialize the blob service client
+    try:
+        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+        container_client = blob_service_client.get_container_client(container_name)
+    except Exception as e:
+        st.error(f"Error connecting to blob storage: {str(e)}")
+        return []
+    
+    # Get a list of document IDs
+    try:
+        # List all blobs in the container
+        blobs = container_client.list_blobs()
+        
+        # Extract unique document IDs from blob names
+        document_ids = set()
+        for blob in blobs:
+            # Handle both blob naming formats:
+            # 1. "document_id/file.ext" (path format)
+            # 2. "document_id_file.ext" (prefix format from file_upload.py)
+            
+            # Check if this is a path-based format with slashes
+            if '/' in blob.name:
+                parts = blob.name.split('/')
+                if len(parts) > 0:
+                    document_ids.add(parts[0])
+            # Check for the doc_ID_filename.ext format (from Streamlit uploads)
+            elif blob.name.startswith('doc_'):
+                # Extract the document ID which is in format doc_timestamp_uniqueid
+                parts = blob.name.split('_', 3)  # Split on first 3 underscores
+                if len(parts) >= 3:
+                    # Reconstruct document_id as doc_timestamp_uniqueid
+                    document_id = f"{parts[0]}_{parts[1]}_{parts[2]}"
+                    document_ids.add(document_id)
+            # Add the full name as a fallback
+            else:
+                document_ids.add(blob.name)
+        
+        document_ids = sorted(list(document_ids))
+        
+    except Exception as e:
+        st.error(f"Error listing blobs: {str(e)}")
+        return []
+    
+    # Display the multi-select
+    if len(document_ids) > 0:
+        # Use a multi-select widget
+        selected_documents = st.multiselect(
+            "Select documents to compare (minimum 2)",
+            options=document_ids,
+            default=None,
+            help="Select two or more documents to compare"
+        )
+        return selected_documents
+    else:
+        st.info("No documents found in the container")
+        return []
+
 def display_file_uploader(container_name, connection_string_var, key=None):
     """
     Display a file uploader for uploading PDFs to Azure Blob Storage.

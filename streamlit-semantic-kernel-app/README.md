@@ -7,6 +7,7 @@ This application uses Azure AI services to process documents through a Streamlit
 - **Q&A**: Ask questions about documents using RAG with Azure AI Search
 - **Summarization**: Get summaries of documents
 - **Proofreading**: Check documents for grammar and spelling issues
+- **Document Comparison**: Compare multiple documents to identify similarities and differences
 - **Intent Routing**: Determine the user's intent from natural language queries
 
 ## Setup
@@ -62,6 +63,7 @@ streamlit-semantic-kernel-app/
     │       ├── qa_skill.py             # Q&A skill
     │       ├── summarization_skill.py  # Summarization skill
     │       ├── proofreading_skill.py   # Proofreading skill
+    │       ├── comparison_skill.py     # Document comparison skill
     │       ├── semantic_router_skill.py # Rule-based intent router
     │       └── llm_router_skill.py     # LLM-based intent router
     └── utils/                # Utility functions
