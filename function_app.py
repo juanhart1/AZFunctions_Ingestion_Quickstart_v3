@@ -3106,3 +3106,70 @@ def proofreading_orchestrator(context):
         error_msg = f"Error in proofreading_orchestrator: {str(e)}"
         context.set_custom_status(error_msg)
         raise
+
+@app.route(route="create_new_index", auth_level=func.AuthLevel.FUNCTION)
+async def create_new_index(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Creates a new Azure AI Search index with the specified fields.
+
+    Request JSON body:
+    {
+        "index_name": "your-index-name",
+        "index_stem_name": "your-index-name", // Alternative field name
+        "fields": {
+            "content": "string",
+            "category": "string",
+            "source_file": "string",
+            "page_num": "int"
+        },
+        "omit_timestamp": false,  # Optional, defaults to false
+        "dimensions": 1536  # Optional, defaults to 1536
+    }
+    """
+    logging.info('Processing request to create a new index')
+    
+    try:
+        req_body = req.get_json()
+        logging.info(f"Request body: {req_body}")
+        
+        # Extract parameters from request body
+        # Support both index_name and index_stem_name for backward compatibility
+        index_name = req_body.get('index_name') or req_body.get('index_stem_name')
+        fields = req_body.get('fields', {})
+        omit_timestamp = req_body.get('omit_timestamp', False)
+        dimensions = req_body.get('dimensions', 1536)
+        
+        if not index_name:
+            return func.HttpResponse(
+                "Please provide an index_name or index_stem_name in the request body",
+                status_code=400
+            )
+        
+        if not fields:
+            return func.HttpResponse(
+                "Please provide fields in the request body",
+                status_code=400
+            )
+        
+        # Create the index
+        result_index_name = create_vector_index(
+            stem_name=index_name,
+            user_fields=fields,
+            omit_timestamp=omit_timestamp,
+            dimensions=dimensions
+        )
+        
+        # Return the result
+        return func.HttpResponse(
+            json.dumps({"index_name": result_index_name}),
+            mimetype="application/json",
+            status_code=200
+        )
+        
+    except Exception as e:
+        logging.error(f"Error creating index: {str(e)}")
+        return func.HttpResponse(
+            json.dumps({"error": str(e)}),
+            mimetype="application/json",
+            status_code=500
+        )
