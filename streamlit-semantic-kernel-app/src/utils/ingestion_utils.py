@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import streamlit as st
+from datetime import datetime
 
 def trigger_ingestion_workflow(
     document_path: str,
@@ -72,11 +73,19 @@ def trigger_ingestion_workflow(
         
         # Check if the request was successful
         if response.status_code in (200, 201, 202):
-            return {
+            # Parse the response which contains the Durable Functions status URLs
+            durable_response = response.json() if response.text else {"message": "Ingestion process started"}
+            
+            # Create a result object with both success status and the full response for status tracking
+            result = {
                 "success": True,
-                "data": response.json() if response.text else {"message": "Ingestion process started"},
-                "status_code": response.status_code
+                "data": durable_response,
+                "status_code": response.status_code,
+                "document_path": document_path,
+                "timestamp": datetime.now().isoformat()
             }
+            
+            return result
         else:
             return {
                 "success": False,
@@ -195,3 +204,50 @@ def display_ingestion_params_form():
         
         # Return the current ingestion settings
         return st.session_state.ingestion_settings
+
+def check_ingestion_status(status_query_uri: str) -> dict:
+    """
+    Check the status of an ingestion process using the Durable Functions status URL.
+    
+    Args:
+        status_query_uri: The URI to query for status updates (from the durable function response)
+        
+    Returns:
+        A dictionary containing the status information or error details
+    """
+    try:
+        # Make a GET request to the status URL
+        response = requests.get(status_query_uri)
+        
+        # Check if the request was successful
+        if response.status_code == 200:
+            status_data = response.json()
+            
+            # Extract relevant status information
+            result = {
+                "success": True,
+                "orchestrator_name": status_data.get("name", "Unknown"),
+                "instance_id": status_data.get("instanceId", "Unknown"),
+                "runtime_status": status_data.get("runtimeStatus", "Unknown"),
+                "custom_status": status_data.get("customStatus", ""),
+                "created_time": status_data.get("createdTime", ""),
+                "last_updated_time": status_data.get("lastUpdatedTime", ""),
+                "raw_data": status_data  # Include the full raw response for debugging
+            }
+            
+            # If the orchestration has failed or completed, include the output/error
+            if status_data.get("runtimeStatus") in ["Failed", "Completed"]:
+                result["output"] = status_data.get("output", "")
+            
+            return result
+        else:
+            return {
+                "success": False,
+                "error": f"Error {response.status_code}: {response.text}",
+                "status_code": response.status_code
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Exception occurred when checking status: {str(e)}"
+        }

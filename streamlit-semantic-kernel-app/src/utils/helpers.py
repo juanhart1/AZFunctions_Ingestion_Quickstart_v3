@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import json
+import requests
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
 from utils.file_upload import upload_file_to_blob
@@ -202,12 +203,20 @@ def display_file_uploader(container_name, connection_string_var, key=None):
                                     "status": "started",
                                     "document_id": document_id,
                                     "blob_name": blob_name,
-                                    "timestamp": datetime.now().isoformat()
+                                    "timestamp": datetime.now().isoformat(),
+                                    "orchestration_data": ingestion_result.get("data", {})
                                 }
                                 
-                                # If there's raw response data, also store that for debugging
-                                if "raw_response" in ingestion_result:
-                                    st.session_state[f"ingestion_status_{document_id}"]["raw_response"] = ingestion_result["raw_response"]
+                                # Display the initial status
+                                st.success("Document ingestion process started successfully!")
+                                
+                                # If we have the status query URI, show a button to check status
+                                if "data" in ingestion_result and "statusQueryGetUri" in ingestion_result["data"]:
+                                    status_uri = ingestion_result["data"]["statusQueryGetUri"]
+                                    st.info(f"""
+                                    You can track the status of this ingestion process in the "Document Ingestion Status" 
+                                    section below or refresh this page later to see updates.
+                                    """)
                                 
                             else:
                                 st.error(f"Failed to trigger ingestion: {ingestion_result.get('error', 'Unknown error')}")
@@ -450,6 +459,9 @@ def display_ingestion_status():
     """
     Display the status of ongoing and completed ingestion processes.
     """
+    # Import check_ingestion_status
+    from utils.ingestion_utils import check_ingestion_status
+    
     # Filter session state keys to find ingestion status entries
     ingestion_keys = [k for k in st.session_state.keys() if k.startswith("ingestion_status_")]
     
@@ -458,6 +470,10 @@ def display_ingestion_status():
         
     st.subheader("Document Ingestion Status")
     
+    # Add a refresh button for all statuses
+    if st.button("Refresh All Statuses"):
+        st.success("Refreshing all ingestion statuses...")
+    
     for key in ingestion_keys:
         status_data = st.session_state[key]
         doc_id = status_data.get("document_id", "Unknown")
@@ -465,12 +481,13 @@ def display_ingestion_status():
         timestamp = status_data.get("timestamp", "Unknown")
         status = status_data.get("status", "Unknown")
         error_message = status_data.get("error", None)
+        orchestration_data = status_data.get("orchestration_data", {})
         
         # Create a unique key for each status
         status_key = f"status_{doc_id}"
         
         # Choose color based on status
-        if status == "started":
+        if status == "started" or status == "running":
             status_color = "blue"
             status_icon = "🔄"
         elif status == "completed":
@@ -484,28 +501,102 @@ def display_ingestion_status():
             status_icon = "❓"
         
         with st.expander(f"{status_icon} Document: {blob_name} (ID: {doc_id})"):
+            # Check for status query URI in the orchestration data
+            status_query_uri = orchestration_data.get("statusQueryGetUri", None)
+            
+            # Show current status from session state
             st.markdown(f"**Status:** <span style='color:{status_color};'>{status}</span>", unsafe_allow_html=True)
             st.write(f"**Started:** {timestamp}")
+            
+            # If we have a status URI, add a refresh button and check real-time status
+            if status_query_uri:
+                if st.button("Check Current Status", key=f"check_status_{doc_id}"):
+                    with st.spinner("Checking ingestion status..."):
+                        # Call the function to check the current status
+                        current_status = check_ingestion_status(status_query_uri)
+                        
+                        if current_status.get("success", False):
+                            # Update the display with the current status
+                            runtime_status = current_status.get("runtime_status", "Unknown")
+                            custom_status = current_status.get("custom_status", "")
+                            
+                            # Show runtime status with appropriate color
+                            if runtime_status == "Completed":
+                                st.markdown(f"**Current Status:** <span style='color:green;'>{runtime_status}</span>", unsafe_allow_html=True)
+                                # Update session state
+                                st.session_state[key]["status"] = "completed"
+                            elif runtime_status == "Failed":
+                                st.markdown(f"**Current Status:** <span style='color:red;'>{runtime_status}</span>", unsafe_allow_html=True)
+                                # Update session state
+                                st.session_state[key]["status"] = "failed"
+                                if "output" in current_status:
+                                    st.session_state[key]["error"] = current_status["output"]
+                            elif runtime_status == "Running":
+                                st.markdown(f"**Current Status:** <span style='color:blue;'>{runtime_status}</span>", unsafe_allow_html=True)
+                                # Update session state
+                                st.session_state[key]["status"] = "running"
+                            else:
+                                st.markdown(f"**Current Status:** <span style='color:orange;'>{runtime_status}</span>", unsafe_allow_html=True)
+                            
+                            # Show custom status if available
+                            if custom_status:
+                                st.markdown(f"**Progress:** {custom_status}")
+                            
+                            # Show last updated time
+                            if "last_updated_time" in current_status:
+                                st.write(f"**Last Updated:** {current_status['last_updated_time']}")
+                            
+                            # Show output for completed or failed processes
+                            if runtime_status in ["Completed", "Failed"] and "output" in current_status:
+                                st.markdown("**Result:**")
+                                st.code(current_status["output"], language="json")
+                        else:
+                            st.error(f"Failed to check status: {current_status.get('error', 'Unknown error')}")
+                
+                # Add information about the orchestration
+                st.markdown("**Orchestration Details:**")
+                st.json(orchestration_data)
             
             # Display error message if there is one
             if error_message:
                 st.error(f"**Error:** {error_message}")
                 
                 # Add helpful suggestions based on common errors
-                if "Connection error" in error_message:
+                if error_message and "Connection error" in error_message:
                     st.info("""
-                    **Troubleshooting suggestions:**
-                    1. Make sure the Azure Function app is running locally or deployed
-                    2. Check the INGESTION_FUNCTION_URL in your .env file
-                    3. If you're running functions locally, try `func start` in the terminal
+**Troubleshooting suggestions:**
+1. Make sure the Azure Function app is running locally or deployed
+2. Check the INGESTION_FUNCTION_URL in your .env file
+3. If you're running functions locally, try `func start` in the terminal
                     """)
-                elif "timed out" in error_message:
-                    st.info("""
-                    **Troubleshooting suggestions:**
-                    1. The function might be taking longer than expected
-                    2. Check function logs for errors or long-running operations
-                    3. Try increasing the timeout in the ingestion_utils.py file
-                    """)
+                    
+            # Add option to terminate the orchestration if it's running
+            if status in ["started", "running"] and "terminatePostUri" in orchestration_data:
+                terminate_uri = orchestration_data["terminatePostUri"].replace("{text}", "Manually terminated by user")
+                if st.button("Cancel Ingestion Process", key=f"terminate_{key}_{doc_id}"):
+                    with st.spinner("Cancelling ingestion process..."):
+                        try:
+                            response = requests.post(terminate_uri)
+                            if response.status_code in [200, 202]:
+                                st.success("Ingestion process cancelled successfully")
+                                # Update session state
+                                st.session_state[key]["status"] = "cancelled"
+                            else:
+                                st.error(f"Failed to cancel ingestion: {response.status_code} - {response.text}")
+                        except Exception as e:
+                            st.error(f"Error cancelling ingestion: {str(e)}")
+                
+                # Add helpful suggestions based on error messages
+                if error_message and "Connection error" in error_message:
+                    st.info("**Troubleshooting suggestions:**\n"
+                           "1. Make sure the Azure Function app is running locally or deployed\n"
+                           "2. Check the INGESTION_FUNCTION_URL in your .env file\n"
+                           "3. If you're running functions locally, try `func start` in the terminal")
+                elif error_message and "timed out" in error_message:
+                    st.info("**Troubleshooting suggestions:**\n"
+                           "1. The function might be taking longer than expected\n"
+                           "2. Check function logs for errors or long-running operations\n"
+                           "3. Try increasing the timeout in the ingestion_utils.py file")
             
             # Add details expander for raw response if available
             if status_data.get("raw_response"):
@@ -513,13 +604,13 @@ def display_ingestion_status():
                     st.code(status_data.get("raw_response"), language="text")
             
             # Add refresh button to check current status
-            if st.button("Refresh Status", key=f"refresh_{doc_id}"):
+            if st.button("Refresh Status", key=f"refresh_{key}_{doc_id}"):
                 # In a real implementation, this would check the actual status with the Azure Function
                 st.info("Refreshing status... (This would check the status with the Azure Function)")
                 # For now, we'll just update the timestamp to show the refresh happened
                 st.session_state[key]["last_checked"] = datetime.now().isoformat()
                 
             # Add option to clear this status from the display
-            if st.button("Clear", key=f"clear_{doc_id}"):
+            if st.button("Clear", key=f"clear_{key}_{doc_id}"):
                 del st.session_state[key]
                 st.rerun()
