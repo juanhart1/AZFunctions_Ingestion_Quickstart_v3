@@ -258,34 +258,59 @@ def create_vector_index(stem_name, user_fields, omit_timestamp=False, dimensions
     else:
         vector_dimensions = os.environ.get('AOAI_EMBEDDINGS_DIMENSIONS')
 
-    # Create vector search configuration
-    # vector_search = VectorSearch(
-    #     algorithm_configurations=[
-    #         HnswVectorSearchAlgorithmConfiguration(
-    #             name=vector_algorithm_name,  # Use the consistent name
-    #             kind="hnsw",
-    #             parameters={
-    #                 "m": 4,
-    #                 "efConstruction": 400,
-    #                 "efSearch": 500,
-    #                 "metric": "cosine"
-    #             }
-    #         )
-    #     ],
-    #     profiles=[
-    #         {
-    #             "name": vector_profile_name,
-    #             "algorithm": vector_algorithm_name
-    #         }
-    #     ]
-    # )
+    # Define vector profile and algorithm names
+    vector_algorithm_name = "vector-config"
+    vector_profile_name = "vector-profile"
+
+    # Import necessary models for vector search
+    from azure.search.documents.indexes.models import (
+        HnswVectorSearchAlgorithmConfiguration,
+        VectorSearch
+    )
+
+    # Create vector search configuration for hybrid search with semantic reranking
+    vector_search = VectorSearch(
+        algorithm_configurations=[
+            HnswVectorSearchAlgorithmConfiguration(
+                name=vector_algorithm_name,
+                kind="hnsw",
+                parameters={
+                    "m": 4,
+                    "efConstruction": 400,
+                    "efSearch": 500,
+                    "metric": "cosine"
+                }
+            )
+        ],
+        profiles=[
+            {
+                "name": vector_profile_name,
+                "algorithm": vector_algorithm_name,
+                "vectorizer": None
+            }
+        ],
+        semantic_search={
+            "configurations": [
+                {
+                    "name": "semantic-config",
+                    "prioritized_fields": {
+                        "title_field": None,
+                        "content_fields": [
+                            {"field_name": "content"}
+                        ],
+                        "keyword_fields": []
+                    }
+                }
+            ]
+        }
+    )
 
     # Add vector embeddings field with correct Collection type and dimensions
     vector_field = SearchField(
         name="embeddings",
         type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
         vector_search_dimensions=dimensions,
-        vector_search_profile_name=vector_profile_name, # Use the same name here
+        vector_search_profile_name=vector_profile_name,
         searchable=True,
         filterable=False,
         sortable=False,
@@ -299,9 +324,38 @@ def create_vector_index(stem_name, user_fields, omit_timestamp=False, dimensions
         fields=fields,
         vector_search=vector_search
     )
-    result = client.create_or_update_index(index)
-
-    return result.name
+    
+    try:
+        # Add detailed logging to help debug
+        logging.info(f"Creating index '{index_name}' with {len(fields)} fields and vector search configuration")
+        logging.info(f"Vector search config: {vector_search.semantic_search}")
+        result = client.create_or_update_index(index)
+        logging.info(f"Successfully created index: {result.name}")
+        return result.name
+    except Exception as e:
+        # Capture and log the detailed error
+        error_detail = str(e)
+        logging.error(f"Error creating index: {error_detail}")
+        
+        # Try to determine if it's a semantic search capability issue
+        if "semantic" in error_detail.lower() and ("not enabled" in error_detail.lower() or "not supported" in error_detail.lower()):
+            logging.warning("It appears semantic search is not enabled on your search service tier.")
+            logging.warning("Attempting to create index without semantic search...")
+            
+            # Try again without semantic search if that's the issue
+            try:
+                # Remove semantic_search from vector_search
+                vector_search.semantic_search = None
+                index.vector_search = vector_search
+                result = client.create_or_update_index(index)
+                logging.info(f"Successfully created index without semantic search: {result.name}")
+                return result.name
+            except Exception as fallback_error:
+                logging.error(f"Error creating index without semantic search: {str(fallback_error)}")
+                raise Exception(f"Failed to create index with or without semantic search: {error_detail}")
+        else:
+            # If it's not related to semantic search, re-raise the original error
+            raise
 
 
 def create_update_index_alias(alias_name, target_index):
@@ -370,3 +424,85 @@ def get_ids_from_all_docs(target_index):
         if len(captured_results) >= total_records:
             break
     return captured_results
+
+def check_search_service_capabilities():
+    """
+    Checks the capabilities of the Azure AI Search service to determine
+    which features are supported (e.g., semanticSearch).
+    
+    Returns:
+        dict: A dictionary of service capabilities
+    """
+    try:
+        # Get the search key, endpoint, and service name from environment variables
+        search_key = os.environ['SEARCH_KEY']
+        search_endpoint = os.environ['SEARCH_ENDPOINT']
+        search_service_name = os.environ['SEARCH_SERVICE_NAME']
+        
+        # Construct the URI for service stats
+        uri = f'{search_endpoint}/servicestats?api-version={API_VER}'
+        headers = {'Content-Type': 'application/json', 'api-key': search_key}
+        
+        # Make the request
+        response = requests.get(uri, headers=headers)
+        if response.status_code == 200:
+            service_stats = response.json()
+            return {
+                "service_name": search_service_name,
+                "endpoint": search_endpoint,
+                "capabilities": service_stats.get("serviceCapabilities", {}),
+                "counters": service_stats.get("counters", {})
+            }
+        else:
+            return {
+                "error": f"Failed to get service capabilities: {response.status_code}",
+                "message": response.text
+            }
+    except Exception as e:
+        return {"error": f"Exception checking service capabilities: {str(e)}"}
+
+def verify_index_creation(index_name):
+    """
+    Verifies that an index was successfully created and reports any issues.
+    
+    Args:
+        index_name (str): The name of the index to verify
+        
+    Returns:
+        dict: Status information about the index
+    """
+    try:
+        # Get the search key, endpoint, and service name from environment variables
+        search_key = os.environ['SEARCH_KEY']
+        search_endpoint = os.environ['SEARCH_ENDPOINT']
+        
+        # Connect to Azure Cognitive Search resource
+        credential = AzureKeyCredential(search_key)
+        client = SearchIndexClient(
+            api_version=API_VER,
+            credential=credential,
+            endpoint=search_endpoint
+        )
+        
+        # Try to get the index
+        try:
+            index = client.get_index(index_name)
+            fields = [{"name": f.name, "type": str(f.type)} for f in index.fields]
+            return {
+                "status": "success",
+                "index_name": index_name,
+                "fields": fields,
+                "has_vector_search": hasattr(index, "vector_search") and index.vector_search is not None,
+                "has_semantic_search": (hasattr(index, "vector_search") and 
+                                       index.vector_search is not None and 
+                                       hasattr(index.vector_search, "semantic_search") and 
+                                       index.vector_search.semantic_search is not None)
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "index_name": index_name,
+                "message": f"Index not found or other error: {str(e)}"
+            }
+    except Exception as e:
+        return {"status": "error", "message": f"Exception verifying index: {str(e)}"}
