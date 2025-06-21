@@ -548,6 +548,9 @@ def pdf_orchestrator(context):
                 'parent_file': parent_file,
                 'page_files': [f.replace('.pdf', '_summary.json') for f in child_files]
             })))
+            
+        # Wait for all document-level summaries to complete
+        document_summary_files = yield context.task_all(doc_summary_tasks)
         # Execute all document summary tasks
         document_summary_files = yield context.task_all(doc_summary_tasks)
 
