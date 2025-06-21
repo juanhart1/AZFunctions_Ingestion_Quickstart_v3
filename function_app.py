@@ -2576,11 +2576,8 @@ def delete_records(activitypayload: str):
     
     deleted_records = delete_documents_vector(records_to_delete, index)
 
-    return_records = []
-    for record in deleted_records:
-        return_records.append({'id': record['id'], 'sourcefile': record['sourcefile'], 'sourcepage': record['sourcepage']})
-
-    return return_records
+    # Return the file name
+    return deleted_records
 
 @app.activity_trigger(input_name="activitypayload")
 def get_ai_index_record_ids(activitypayload: str):
@@ -3109,66 +3106,3 @@ def proofreading_orchestrator(context):
         error_msg = f"Error in proofreading_orchestrator: {str(e)}"
         context.set_custom_status(error_msg)
         raise
-
-@app.route(route="create_new_index", auth_level=func.AuthLevel.FUNCTION)
-def create_new_index(req: func.HttpRequest) -> func.HttpResponse:
-    try:
-        # Get the JSON payload from the request
-        data = req.get_json()
-        
-        # Extract parameters from the payload
-        stem_name = data.get("index_stem_name", "default-index")
-        fields = data.get("fields", {})  # Get fields directly
-        omit_timestamp = data.get("omit_timestamp", False)
-        dimensions = data.get("dimensions", 3072)  # Default to 3072 for text-embedding-3-large
-        
-        # Log the parameters we're using
-        logging.info(f"Creating index with stem_name: {stem_name}, fields: {fields}, dimensions: {dimensions}")
-        
-        # Check search service capabilities
-        from ai_search_utilities import check_search_service_capabilities
-        service_info = check_search_service_capabilities()
-        logging.info(f"Service capabilities: {service_info}")
-        
-        # Create the vector index
-        index_name = create_vector_index(
-            stem_name=stem_name, 
-            user_fields=fields,  # Pass fields directly
-            omit_timestamp=omit_timestamp, 
-            dimensions=dimensions
-        )
-        
-        # Verify the index was created successfully
-        from ai_search_utilities import verify_index_creation
-        index_status = verify_index_creation(index_name)
-        
-        # Return the index name and success message
-        return func.HttpResponse(
-            body=json.dumps({
-                "index_name": index_name,
-                "message": f"Successfully created index: {index_name}",
-                "index_status": index_status
-            }),
-            mimetype="application/json",
-            status_code=200
-        )
-    except Exception as e:
-        logging.error(f"Error creating index: {str(e)}")
-        
-        # Get additional diagnostic information
-        diagnostic_info = {}
-        try:
-            from ai_search_utilities import check_search_service_capabilities
-            diagnostic_info["service_info"] = check_search_service_capabilities()
-        except Exception as diag_error:
-            diagnostic_info["service_info_error"] = str(diag_error)
-        
-        return func.HttpResponse(
-            body=json.dumps({
-                "error": str(e),
-                "message": "Failed to create index",
-                "diagnostic_info": diagnostic_info
-            }),
-            mimetype="application/json",
-            status_code=500
-        )
