@@ -480,23 +480,133 @@ def generate_hierarchical_summary(content):
                     if content:
                         # Try to parse as JSON first
                         try:
-                            return json.loads(content)
-                        except json.JSONDecodeError:
-                            # If not valid JSON, return a basic structure with the content
-                            logging.warning("Response was not valid JSON, returning basic structure")
+                            parsed_json = json.loads(content)
+                            # Ensure a standardized return format
                             return {
-                                "executive_summary": content[:200] + "...",
-                                "detailed_summary": content,
-                                "key_topics": ["Unable to parse topics"],
-                                "takeaways": ["See detailed summary"]
+                                "executive_summary": parsed_json.get("executive_summary", 
+                                                    parsed_json.get("Executive Summary", 
+                                                    "No executive summary available")),
+                                "detailed_summary": parsed_json.get("detailed_summary", 
+                                                   parsed_json.get("Detailed Summary", 
+                                                   "No detailed summary available")),
+                                "key_topics": parsed_json.get("key_topics", 
+                                             parsed_json.get("Key Topics/Themes", [])),
+                                "takeaways": parsed_json.get("takeaways", 
+                                            parsed_json.get("Main Conclusions/Takeaways", []))
                             }
-                    else:
-                        raise ValueError("Empty content in response")
-                else:
-                    # Log the actual response for debugging
-                    logging.error(f"Unexpected response structure: {json.dumps(resp_json)}")
-                    raise KeyError("Response missing 'choices' field")
-            
+                        except json.JSONDecodeError:
+                            # Not valid JSON, try to extract structured data using regex
+                            import re
+                            
+                            # Check if the response has markdown code blocks with JSON
+                            json_block_match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
+                            if json_block_match:
+                                try:
+                                    json_str = json_block_match.group(1)
+                                    parsed_json = json.loads(json_str)
+                                    
+                                    # Use the same standardization logic as above
+                                    standardized_output = {
+                                        "executive_summary": None,
+                                        "detailed_summary": None,
+                                        "key_topics": [],
+                                        "takeaways": []
+                                    }
+                                    
+                                    field_mappings = {
+                                        "executive_summary": ["executive_summary", "executive summary", "Executive Summary", "executive", "summary"],
+                                        "detailed_summary": ["detailed_summary", "detailed summary", "Detailed Summary", "detailed", "full summary", "full_summary"],
+                                        "key_topics": ["key_topics", "key topics", "Key Topics", "topics", "Topics", "key_themes", "themes", "Themes"],
+                                        "takeaways": ["takeaways", "Takeaways", "conclusions", "Conclusions", "key_findings", "findings", "main_points"]
+                                    }
+                                    
+                                    for target_field, source_fields in field_mappings.items():
+                                        for source_field in source_fields:
+                                            if source_field in parsed_json:
+                                                standardized_output[target_field] = parsed_json[source_field]
+                                                break
+                                    
+                                    # Ensure list fields are properly formatted
+                                    for list_field in ["key_topics", "takeaways"]:
+                                        if standardized_output[list_field] is None:
+                                            standardized_output[list_field] = []
+                                        elif isinstance(standardized_output[list_field], str):
+                                            # Try to parse as JSON array if it looks like one
+                                            if standardized_output[list_field].strip().startswith('[') and standardized_output[list_field].strip().endswith(']'):
+                                                try:
+                                                    standardized_output[list_field] = json.loads(standardized_output[list_field])
+                                                except:
+                                                    # Split by common delimiters
+                                                    items = re.split(r'[,;•\n-]', standardized_output[list_field])
+                                                    standardized_output[list_field] = [item.strip() for item in items if item.strip()]
+                                            else:
+                                                # Just make it a single-item list
+                                                standardized_output[list_field] = [standardized_output[list_field]]
+                                    
+                                    return standardized_output
+                                except:
+                                    # If JSON parsing fails, fall back to text extraction
+                                    pass
+                            
+                            # If we couldn't extract JSON, try to extract key sections using headers
+                            exec_summary = None
+                            detailed_summary = None
+                            topics = []
+                            conclusions = []
+                            
+                            # Try to extract executive summary
+                            exec_match = re.search(r'(?:Executive Summary|EXECUTIVE SUMMARY):\s*(.*?)(?:\n\n|\n#|\n##|$)', content, re.IGNORECASE | re.DOTALL)
+                            if exec_match:
+                                exec_summary = exec_match.group(1).strip()
+                            
+                            # Try to extract detailed summary
+                            detailed_match = re.search(r'(?:Detailed Summary|DETAILED SUMMARY|Full Summary):\s*(.*?)(?:\n\n|\n#|\n##|$)', content, re.IGNORECASE | re.DOTALL)
+                            if detailed_match:
+                                detailed_summary = detailed_match.group(1).strip()
+                            
+                            # Try to extract topics
+                            topics_match = re.search(r'(?:Key Topics|TOPICS|Themes|KEY THEMES):\s*(.*?)(?:\n\n|\n#|\n##|$)', content, re.IGNORECASE | re.DOTALL)
+                            if topics_match:
+                                topics_text = topics_match.group(1).strip()
+                                # Check for bullet points
+                                if '-' in topics_text or '•' in topics_text or '*' in topics_text:
+                                    # Split by bullet markers
+                                    topics_items = re.split(r'\s*[-•*]\s*', topics_text)
+                                    # Remove empty items and clean up
+                                    topics = [item.strip() for item in topics_items if item.strip()]
+                                else:
+                                    # Just use as a single topic
+                                    topics = [topics_text]
+                            
+                            # Try to extract conclusions
+                            concl_match = re.search(r'(?:Conclusions|CONCLUSIONS|Takeaways|KEY TAKEAWAYS):\s*(.*?)(?:\n\n|\n#|\n##|$)', content, re.IGNORECASE | re.DOTALL)
+                            if concl_match:
+                                concl_text = concl_match.group(1).strip()
+                                # Check for bullet points
+                                if '-' in concl_text or '•' in concl_text or '*' in concl_text:
+                                    # Split by bullet markers
+                                    concl_items = re.split(r'\s*[-•*]\s*', concl_text)
+                                    # Remove empty items and clean up
+                                    conclusions = [item.strip() for item in concl_items if item.strip()]
+                                else:
+                                    # Just use as a single conclusion
+                                    conclusions = [concl_text]
+                            
+                            # If we couldn't extract structured data, use the whole content as detailed summary
+                            if not exec_summary and not detailed_summary:
+                                if len(content) > 500:
+                                    exec_summary = content[:500] + "..."
+                                    detailed_summary = content
+                                else:
+                                    exec_summary = content
+                                    detailed_summary = content
+                            
+                            return {
+                                "executive_summary": exec_summary or "No executive summary available",
+                                "detailed_summary": detailed_summary or content,
+                                "key_topics": topics,
+                                "takeaways": conclusions
+                            }
             processed = True
             
         except (KeyError, ValueError) as e:

@@ -262,11 +262,32 @@ def display_result(result, result_type):
         # Add horizontal rule for better visual separation
         st.markdown("---")
         
+        # Handle the specific format from the screenshot with ```json { "executive_summary": ... }
+        if isinstance(result, str) and "```json" in result:
+            import re
+            # Extract the actual JSON content
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', result, re.DOTALL)
+            if json_match:
+                try:
+                    extracted_json = json_match.group(1)
+                    parsed_json = json.loads(extracted_json)
+                    
+                    # Use our structured format
+                    result = {
+                        "executive": parsed_json.get("executive_summary", "No executive summary available"),
+                        "detailed": parsed_json.get("detailed_summary", "No detailed summary available"),
+                        "topics": parsed_json.get("key_topics", []),
+                        "conclusions": parsed_json.get("takeaways", [])
+                    }
+                except:
+                    # If parsing fails, just continue with normal processing
+                    pass
+        
         # Check if result is a dict with the new format
         if isinstance(result, dict):
             if "error" in result:
                 st.error(result["error"])
-            elif "executive" in result and "detailed" in result:
+            else:
                 # Create a container for the metadata
                 meta_col1, meta_col2 = st.columns(2)
                 
@@ -286,10 +307,126 @@ def display_result(result, result_type):
                 
                 st.markdown("---")
                 
-                # Ensure executive summary is a string, not a JSON object
-                exec_summary = result['executive']
-                if isinstance(exec_summary, dict) or isinstance(exec_summary, list):
-                    exec_summary = json.dumps(exec_summary, indent=2)
+                # Extract executive summary with better handling of different formats
+                exec_summary = None
+                
+                # Try different possible paths to the executive summary
+                if "executive" in result:
+                    exec_summary = result['executive']
+                elif "summary" in result and isinstance(result["summary"], dict):
+                    summary_content = result["summary"]
+                    if "executive_summary" in summary_content:
+                        exec_summary = summary_content["executive_summary"]
+                    elif "Executive Summary" in summary_content:
+                        exec_summary = summary_content["Executive Summary"]
+                elif "executive_summary" in result:
+                    exec_summary = result["executive_summary"]
+                
+                # Try to parse the executive summary if it appears to be JSON or contains JSON markers
+                if isinstance(exec_summary, str):
+                    import re
+                    
+                    # Check for ```json pattern in the string
+                    json_block_match = re.search(r'```(?:json)?\s*(.*?)\s*```', exec_summary, re.DOTALL)
+                    if json_block_match:
+                        try:
+                            json_str = json_block_match.group(1)
+                            json_obj = json.loads(json_str)
+                            if isinstance(json_obj, dict) and "executive_summary" in json_obj:
+                                exec_summary = json_obj["executive_summary"]
+                        except:
+                            pass  # Keep original if not valid JSON
+                    
+                    # Check for triple backticks pattern as shown in screenshot
+                    backtick_match = re.search(r'\`\`\`\s*json\s*(\{.*\})', exec_summary, re.DOTALL)
+                    if backtick_match:
+                        try:
+                            json_str = backtick_match.group(1)
+                            json_obj = json.loads(json_str)
+                            if isinstance(json_obj, dict) and "executive_summary" in json_obj:
+                                exec_summary = json_obj["executive_summary"]
+                        except:
+                            pass
+                    
+                    # Check for triple quotes pattern
+                    quotes_match = re.search(r'\"\"\"(?:json)?\s*(.*?)\s*\"\"\"', exec_summary, re.DOTALL)
+                    if quotes_match:
+                        try:
+                            json_str = quotes_match.group(1)
+                            json_obj = json.loads(json_str)
+                            if isinstance(json_obj, dict) and "executive_summary" in json_obj:
+                                exec_summary = json_obj["executive_summary"]
+                        except:
+                            pass
+                            
+                    # Check for the specific format in the screenshot with ```json { "executive_summary": "..." }
+                    special_pattern_match = re.search(r'```\s*json\s*{\s*"executive_summary"\s*:\s*"([^"]+)"', exec_summary, re.DOTALL)
+                    if special_pattern_match:
+                        exec_summary = special_pattern_match.group(1)
+                    
+                    # Check for the format with triple quotes
+                    triple_quotes_match = re.search(r'"""json\s*{\s*"executive_summary"\s*:\s*"([^"]+)"', exec_summary, re.DOTALL)
+                    if triple_quotes_match:
+                        exec_summary = triple_quotes_match.group(1)
+                        
+                    # Look for patterns like "json { "executive_summary": "content" }"
+                    json_obj_match = re.search(r'json\s*{\s*"executive_summary"\s*:\s*"([^"]+)"', exec_summary, re.DOTALL)
+                    if json_obj_match:
+                        exec_summary = json_obj_match.group(1)
+                        
+                    # If it's just a JSON object without markers
+                    if exec_summary.strip().startswith('{'):
+                        try:
+                            json_obj = json.loads(exec_summary)
+                            if isinstance(json_obj, dict) and "executive_summary" in json_obj:
+                                exec_summary = json_obj["executive_summary"]
+                        except:
+                            pass  # Keep original if not valid JSON
+                
+                # Handle if the executive summary is still a complex object
+                if isinstance(exec_summary, dict):
+                    if "executive_summary" in exec_summary:
+                        exec_summary = exec_summary["executive_summary"]
+                    elif list(exec_summary.keys()):
+                        # Just get the first value if we can't find a specific key
+                        exec_summary = list(exec_summary.values())[0]
+                
+                # Clean up text if it has quotes around it (common in JSON strings)
+                if isinstance(exec_summary, str) and exec_summary.startswith('"') and exec_summary.endswith('"'):
+                    exec_summary = exec_summary[1:-1]
+                
+                # Handle the specific format shown in the screenshot
+                if isinstance(exec_summary, str) and exec_summary.strip().startswith("```") or "json {" in exec_summary:
+                    # Try to extract just the actual summary text
+                    pattern = r'```.*?"executive_summary":\s*"(.*?)"'
+                    match = re.search(pattern, exec_summary, re.DOTALL)
+                    if match:
+                        exec_summary = match.group(1)
+                    else:
+                        # Try another pattern for triple backtick JSON
+                        match = re.search(r'```.*?\{(.*?)\}.*?```', exec_summary, re.DOTALL)
+                        if match:
+                            # We have JSON content, try to extract the exec summary
+                            json_content = "{" + match.group(1) + "}"
+                            try:
+                                json_obj = json.loads(json_content)
+                                if "executive_summary" in json_obj:
+                                    exec_summary = json_obj["executive_summary"]
+                            except:
+                                pass
+                
+                # Final cleanup for any lingering backticks or formatting
+                if isinstance(exec_summary, str):
+                    # Remove backticks
+                    exec_summary = exec_summary.replace("`", "")
+                    # Remove "json {" fragments
+                    exec_summary = re.sub(r'json\s*\{', '', exec_summary)
+                    # Clean up any messy JSON fragments that didn't parse properly
+                    exec_summary = re.sub(r'"executive_summary"\s*:', '', exec_summary)
+                    exec_summary = re.sub(r'\}\s*$', '', exec_summary)
+                    exec_summary = exec_summary.strip('"\'')
+                    # Clean up any triple quotes
+                    exec_summary = exec_summary.replace('"""', '').replace("'''", "")
                 
                 # Display executive summary
                 st.subheader("Executive Summary")
@@ -310,9 +447,99 @@ def display_result(result, result_type):
                 st.markdown("<br>", unsafe_allow_html=True)
                 
                 # Ensure detailed summary is a string, not a JSON object
-                detailed_summary = result['detailed']
-                if isinstance(detailed_summary, dict) or isinstance(detailed_summary, list):
-                    detailed_summary = json.dumps(detailed_summary, indent=2)
+                detailed_summary = None
+                
+                # Try different possible paths to the detailed summary
+                if "detailed" in result:
+                    detailed_summary = result['detailed']
+                elif "summary" in result and isinstance(result["summary"], dict):
+                    summary_content = result["summary"]
+                    if "detailed_summary" in summary_content:
+                        detailed_summary = summary_content["detailed_summary"]
+                    elif "Detailed Summary" in summary_content:
+                        detailed_summary = summary_content["Detailed Summary"]
+                elif "detailed_summary" in result:
+                    detailed_summary = result["detailed_summary"]
+                
+                # Default if not found
+                if detailed_summary is None:
+                    detailed_summary = "No detailed summary available."
+                
+                # Process detailed summary if it's a string that contains JSON-like content
+                if isinstance(detailed_summary, str):
+                    import re
+                    
+                    # Check for ```json pattern in the string
+                    json_block_match = re.search(r'```(?:json)?\s*(.*?)\s*```', detailed_summary, re.DOTALL)
+                    if json_block_match:
+                        try:
+                            json_str = json_block_match.group(1)
+                            json_obj = json.loads(json_str)
+                            if isinstance(json_obj, dict) and "detailed_summary" in json_obj:
+                                detailed_summary = json_obj["detailed_summary"]
+                            elif isinstance(json_obj, dict) and "detailed_summary" not in json_obj:
+                                # If there's no specific detailed_summary field, look for fields that might contain it
+                                for key in json_obj:
+                                    if "detail" in key.lower() or "summary" in key.lower():
+                                        detailed_summary = json_obj[key]
+                                        break
+                        except:
+                            pass  # Keep original if not valid JSON
+                    
+                    # Check for triple backticks pattern as shown in screenshot
+                    backtick_match = re.search(r'\`\`\`\s*json\s*(\{.*\})', detailed_summary, re.DOTALL)
+                    if backtick_match:
+                        try:
+                            json_str = backtick_match.group(1)
+                            json_obj = json.loads(json_str)
+                            if isinstance(json_obj, dict) and "detailed_summary" in json_obj:
+                                detailed_summary = json_obj["detailed_summary"]
+                        except:
+                            pass
+                            
+                    # Check for the specific pattern in the screenshot with ```json { "detailed_summary": "..." }
+                    special_pattern_match = re.search(r'```\s*json\s*{\s*"detailed_summary"\s*:\s*"([^"]+)"', detailed_summary, re.DOTALL)
+                    if special_pattern_match:
+                        detailed_summary = special_pattern_match.group(1)
+                    
+                    # Look for patterns like "json { "detailed_summary": "content" }"
+                    json_obj_match = re.search(r'json\s*{\s*"detailed_summary"\s*:\s*"([^"]+)"', detailed_summary, re.DOTALL)
+                    if json_obj_match:
+                        detailed_summary = json_obj_match.group(1)
+                        
+                    # If it's just a JSON object without markers
+                    if detailed_summary.strip().startswith('{'):
+                        try:
+                            json_obj = json.loads(detailed_summary)
+                            if isinstance(json_obj, dict) and "detailed_summary" in json_obj:
+                                detailed_summary = json_obj["detailed_summary"]
+                        except:
+                            pass  # Keep original if not valid JSON
+                
+                # Handle complex objects
+                if isinstance(detailed_summary, dict):
+                    if "detailed_summary" in detailed_summary:
+                        detailed_summary = detailed_summary["detailed_summary"]
+                    else:
+                        detailed_summary = json.dumps(detailed_summary, indent=2)
+                
+                # Clean up text if it has quotes around it (common in JSON strings)
+                if isinstance(detailed_summary, str) and detailed_summary.startswith('"') and detailed_summary.endswith('"'):
+                    detailed_summary = detailed_summary[1:-1]
+                    
+                # Handle the specific case in the screenshot
+                if isinstance(detailed_summary, str) and (
+                    "```json" in detailed_summary or 
+                    '"""json' in detailed_summary or 
+                    "'''json" in detailed_summary
+                ):
+                    # Clean up markdown code blocks and any JSON formatting
+                    detailed_summary = re.sub(r'```json|```|"""json|"""|\'\'\' json|\'\'\'', '', detailed_summary).strip()
+                
+                # Remove leading backticks/quotes if present
+                if isinstance(detailed_summary, str):
+                    detailed_summary = re.sub(r'^[`"\']+ *', '', detailed_summary)
+                    detailed_summary = re.sub(r' *[`"\']+ *$', '', detailed_summary)
                 
                 # Display detailed summary
                 st.subheader("Detailed Summary")
@@ -333,93 +560,289 @@ def display_result(result, result_type):
                 st.markdown("<br>", unsafe_allow_html=True)
                 
                 # Create two columns for topics and conclusions
-                if ("topics" in result and result["topics"]) or ("conclusions" in result and result["conclusions"]):
-                    col1, col2 = st.columns(2)
-                    
-                    # Display Key Topics/Themes if available
-                    if "topics" in result and result["topics"]:
-                        with col1:
-                            st.subheader("Key Topics/Themes")
-                            topics_html = "<div style='background-color: rgba(0, 0, 0, 0.05); padding: 15px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);'>"
-                            
-                            # Handle topics that might be strings, dicts, or lists
-                            topics = result["topics"]
-                            if not isinstance(topics, list):
-                                if isinstance(topics, dict):
-                                    topics = [f"{k}: {v}" for k, v in topics.items()]
-                                else:
-                                    topics = [str(topics)]
-                                
-                            for topic in topics:
-                                if isinstance(topic, dict):
-                                    for k, v in topic.items():
-                                        topics_html += f"<p style='margin-bottom: 8px; color: inherit;'>🔹 {k}: {v}</p>"
-                                else:
-                                    topics_html += f"<p style='margin-bottom: 8px; color: inherit;'>🔹 {topic}</p>"
-                            topics_html += "</div>"
-                            st.markdown(topics_html, unsafe_allow_html=True)
-                    
-                    # Display Main Conclusions/Takeaways if available
-                    if "conclusions" in result and result["conclusions"]:
-                        with col2:
-                            st.subheader("Main Conclusions/Takeaways")
-                            conclusions_html = "<div style='background-color: rgba(0, 0, 0, 0.05); padding: 15px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);'>"
-                            
-                            # Handle conclusions that might be strings, dicts, or lists
-                            conclusions = result["conclusions"]
-                            if not isinstance(conclusions, list):
-                                if isinstance(conclusions, dict):
-                                    conclusions = [f"{k}: {v}" for k, v in conclusions.items()]
-                                else:
-                                    conclusions = [str(conclusions)]
-                            
-                            for i, conclusion in enumerate(conclusions, 1):
-                                if isinstance(conclusion, dict):
-                                    for k, v in conclusion.items():
-                                        conclusions_html += f"<p style='margin-bottom: 8px; color: inherit;'><strong>{i}.</strong> {k}: {v}</p>"
-                                else:
-                                    conclusions_html += f"<p style='margin-bottom: 8px; color: inherit;'><strong>{i}.</strong> {conclusion}</p>"
-                            conclusions_html += "</div>"
-                            st.markdown(conclusions_html, unsafe_allow_html=True)
+                topics = None
+                conclusions = None
                 
-            elif "summary" in result:
-                # Format and display summary if it's a raw JSON string or object
-                summary_content = result['summary']
-                if isinstance(summary_content, dict) or isinstance(summary_content, list):
-                    formatted_summary = json.dumps(summary_content, indent=2)
-                    st.code(formatted_summary, language='json')
+                # Try different paths for topics and conclusions
+                if "topics" in result:
+                    topics = result["topics"]
+                elif "summary" in result and isinstance(result["summary"], dict):
+                    summary_content = result["summary"]
+                    if "key_topics" in summary_content:
+                        topics = summary_content["key_topics"]
+                    elif "Key Topics/Themes" in summary_content:
+                        topics = summary_content["Key Topics/Themes"]
+                    # Try more potential field names for topics
+                    elif any(key in summary_content for key in ["topics", "Topics", "key_themes", "Key Themes", "themes", "Themes"]):
+                        for field_name in ["topics", "Topics", "key_themes", "Key Themes", "themes", "Themes"]:
+                            if field_name in summary_content:
+                                topics = summary_content[field_name]
+                                break
+                
+                # Also try root-level alternative names for topics
+                if topics is None:
+                    for field_name in ["key_topics", "Key Topics/Themes", "topics", "Topics", "key_themes", 
+                                      "Key Themes", "themes", "Themes", "main_topics", "Main Topics"]:
+                        if field_name in result:
+                            topics = result[field_name]
+                            break
+                
+                # Process topics if they're in string format
+                if isinstance(topics, str):
+                    # If topics is a string, try to parse it as a list
+                    if topics.startswith('[') and topics.endswith(']'):
+                        try:
+                            # Try parsing as JSON array
+                            topics = json.loads(topics)
+                        except:
+                            # If parsing fails, split by common delimiters
+                            topics = [t.strip() for t in re.split(r'[,;•\n-]', topics) if t.strip()]
+                    else:
+                        # Split by common list markers
+                        topics = [t.strip() for t in re.split(r'[,;•\n-]', topics) if t.strip()]
+                
+                # Handle other string formats that might contain JSON
+                if isinstance(topics, str) and ('```' in topics or '{' in topics or '[' in topics):
+                    # Try to extract structured content from markdown blocks
+                    try:
+                        # Look for code blocks
+                        json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', topics, re.DOTALL)
+                        if json_match:
+                            json_content = json_match.group(1)
+                            try:
+                                parsed = json.loads(json_content)
+                                if isinstance(parsed, list):
+                                    topics = parsed
+                                elif isinstance(parsed, dict) and "topics" in parsed:
+                                    topics = parsed["topics"]
+                            except:
+                                pass
+                        
+                        # If no code blocks, try to parse as JSON directly
+                        elif topics.strip().startswith('{') or topics.strip().startswith('['):
+                            try:
+                                parsed = json.loads(topics)
+                                if isinstance(parsed, list):
+                                    topics = parsed
+                                elif isinstance(parsed, dict) and "topics" in parsed:
+                                    topics = parsed["topics"]
+                            except:
+                                pass
+                    except:
+                        pass
+                
+                # If topics is still None or not a list, create an empty list
+                if topics is None:
+                    topics = []
+                
+                # Make sure topics is a list
+                if not isinstance(topics, list):
+                    if isinstance(topics, dict):
+                        # Convert dict to list of strings
+                        topics = [f"{k}: {v}" for k, v in topics.items()]
+                    else:
+                        topics = [str(topics)]
+                
+                # Try different paths for conclusions
+                if "conclusions" in result:
+                    conclusions = result["conclusions"]
+                elif "summary" in result and isinstance(result["summary"], dict):
+                    summary_content = result["summary"]
+                    if "takeaways" in summary_content:
+                        conclusions = summary_content["takeaways"]
+                    elif "Main Conclusions/Takeaways" in summary_content:
+                        conclusions = summary_content["Main Conclusions/Takeaways"]
+                    # Try more potential field names for conclusions
+                    elif any(key in summary_content for key in ["conclusions", "Conclusions", "key_takeaways", "Key Takeaways"]):
+                        for field_name in ["conclusions", "Conclusions", "key_takeaways", "Key Takeaways"]:
+                            if field_name in summary_content:
+                                conclusions = summary_content[field_name]
+                                break
+                
+                # Also try root-level alternative names for conclusions
+                if conclusions is None:
+                    for field_name in ["takeaways", "Main Conclusions/Takeaways", "conclusions", "Conclusions",
+                                     "main_conclusions", "Main Conclusions", "key_takeaways", "Key Takeaways"]:
+                        if field_name in result:
+                            conclusions = result[field_name]
+                            break
+                
+                # Process conclusions if they're in string format
+                if isinstance(conclusions, str):
+                    # If conclusions is a string, try to parse it as a list
+                    if conclusions.startswith('[') and conclusions.endswith(']'):
+                        try:
+                            # Try parsing as JSON array
+                            conclusions = json.loads(conclusions)
+                        except:
+                            # If parsing fails, split by common delimiters
+                            conclusions = [c.strip() for c in re.split(r'[,;•\n-]', conclusions) if c.strip()]
+                    else:
+                        # Split by common list markers
+                        conclusions = [c.strip() for c in re.split(r'[,;•\n-]', conclusions) if c.strip()]
+                
+                # Handle other string formats that might contain JSON
+                if isinstance(conclusions, str) and ('```' in conclusions or '{' in conclusions or '[' in conclusions):
+                    # Try to extract structured content from markdown blocks
+                    try:
+                        # Look for code blocks
+                        json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', conclusions, re.DOTALL)
+                        if json_match:
+                            json_content = json_match.group(1)
+                            try:
+                                parsed = json.loads(json_content)
+                                if isinstance(parsed, list):
+                                    conclusions = parsed
+                                elif isinstance(parsed, dict) and "conclusions" in parsed:
+                                    conclusions = parsed["conclusions"]
+                                elif isinstance(parsed, dict) and "takeaways" in parsed:
+                                    conclusions = parsed["takeaways"]
+                            except:
+                                pass
+                        
+                        # If no code blocks, try to parse as JSON directly
+                        elif conclusions.strip().startswith('{') or conclusions.strip().startswith('['):
+                            try:
+                                parsed = json.loads(conclusions)
+                                if isinstance(parsed, list):
+                                    conclusions = parsed
+                                elif isinstance(parsed, dict) and "conclusions" in parsed:
+                                    conclusions = parsed["conclusions"]
+                                elif isinstance(parsed, dict) and "takeaways" in parsed:
+                                    conclusions = parsed["takeaways"]
+                            except:
+                                pass
+                    except:
+                        pass
+                
+                # If conclusions is still None or not a list, create an empty list
+                if conclusions is None:
+                    conclusions = []
+                
+                # Make sure conclusions is a list
+                if not isinstance(conclusions, list):
+                    if isinstance(conclusions, dict):
+                        # Convert dict to list of strings
+                        conclusions = [f"{k}: {v}" for k, v in conclusions.items()]
+                    else:
+                        conclusions = [str(conclusions)]
+        
+        # Display topics and conclusions in two columns
+        if topics or conclusions:
+            col1, col2 = st.columns(2)
+            
+            # Debug output - comment out in production
+            print(f"DEBUG in display_result: topics={topics}, type={type(topics)}")
+            print(f"DEBUG in display_result: conclusions={conclusions}, type={type(conclusions)}")
+            
+            # Always display the Topics section, even if empty
+            with col1:
+                st.subheader("Key Topics/Themes")
+                topics_html = "<div style='background-color: rgba(0, 0, 0, 0.05); padding: 15px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);'>"
+                
+                # Handle topics that might be strings, dicts, or lists
+                if topics is None:
+                    topics = []
+                
+                if not isinstance(topics, list):
+                    if isinstance(topics, dict):
+                        topics = [f"{k}: {v}" for k, v in topics.items()]
+                    else:
+                        # Try to parse as JSON if it's a string
+                        if isinstance(topics, str) and (topics.strip().startswith('[') or topics.strip().startswith('{')):
+                            try:
+                                parsed = json.loads(topics)
+                                if isinstance(parsed, list):
+                                    topics = parsed
+                                elif isinstance(parsed, dict):
+                                    topics = [f"{k}: {v}" for k, v in parsed.items()]
+                            except:
+                                topics = [str(topics)]
+                        else:
+                            topics = [str(topics)]
+                
+                if len(topics) > 0:
+                    for topic in topics:
+                        if isinstance(topic, dict):
+                            for k, v in topic.items():
+                                topics_html += f"<p style='margin-bottom: 8px; color: inherit;'>🔹 {k}: {v}</p>"
+                        else:
+                            topics_html += f"<p style='margin-bottom: 8px; color: inherit;'>🔹 {topic}</p>"
                 else:
-                    # Legacy format with just one summary
-                    st.markdown(f"""
-                    <div style='
-                        background-color: rgba(0, 0, 0, 0.05); 
-                        color: inherit; 
-                        padding: 15px; 
-                        border-radius: 5px; 
-                        border: 1px solid rgba(128, 128, 128, 0.2);
-                        box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
-                    '>
-                        {result['summary']}
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                # If we have a structure we don't recognize, display it as formatted JSON
-                st.subheader("Summary Data")
-                st.json(result)
+                    topics_html += "<p style='margin-bottom: 8px; color: inherit;'>No topics available</p>"
+                
+                topics_html += "</div>"
+                st.markdown(topics_html, unsafe_allow_html=True)
+            
+            # Always display the Conclusions section, even if empty
+            with col2:
+                st.subheader("Main Conclusions/Takeaways")
+                conclusions_html = "<div style='background-color: rgba(0, 0, 0, 0.05); padding: 15px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);'>"
+                
+                # Handle conclusions that might be strings, dicts, or lists
+                if conclusions is None:
+                    conclusions = []
+                
+                if not isinstance(conclusions, list):
+                    if isinstance(conclusions, dict):
+                        conclusions = [f"{k}: {v}" for k, v in conclusions.items()]
+                    else:
+                        # Try to parse as JSON if it's a string
+                        if isinstance(conclusions, str) and (conclusions.strip().startswith('[') or conclusions.strip().startswith('{')):
+                            try:
+                                parsed = json.loads(conclusions)
+                                if isinstance(parsed, list):
+                                    conclusions = parsed
+                                elif isinstance(parsed, dict):
+                                    conclusions = [f"{k}: {v}" for k, v in parsed.items()]
+                            except:
+                                conclusions = [str(conclusions)]
+                        else:
+                            conclusions = [str(conclusions)]
+                
+                if len(conclusions) > 0:
+                    for i, conclusion in enumerate(conclusions, 1):
+                        if isinstance(conclusion, dict):
+                            for k, v in conclusion.items():
+                                conclusions_html += f"<p style='margin-bottom: 8px; color: inherit;'><strong>{i}.</strong> {k}: {v}</p>"
+                        else:
+                            conclusions_html += f"<p style='margin-bottom: 8px; color: inherit;'><strong>{i}.</strong> {conclusion}</p>"
+                else:
+                    conclusions_html += "<p style='margin-bottom: 8px; color: inherit;'>No conclusions available</p>"
+                
+                conclusions_html += "</div>"
+                st.markdown(conclusions_html, unsafe_allow_html=True)
         else:
-            # Handle legacy string format
-            st.markdown(f"""
-            <div style='
-                background-color: rgba(0, 0, 0, 0.05); 
-                color: inherit; 
-                padding: 15px; 
-                border-radius: 5px; 
-                border: 1px solid rgba(128, 128, 128, 0.2);
-                box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
-            '>
-                {result}
-            </div>
-            """, unsafe_allow_html=True)
+            # If no topics or conclusions were found, still display empty sections
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Key Topics/Themes")
+                st.markdown("""
+                <div style='
+                    background-color: rgba(0, 0, 0, 0.05); 
+                    padding: 15px; 
+                    border-radius: 5px; 
+                    border: 1px solid rgba(128, 128, 128, 0.2);
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+                '>
+                    <p style='margin-bottom: 8px; color: inherit;'>No topics available</p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                st.subheader("Main Conclusions/Takeaways")
+                st.markdown("""
+                <div style='
+                    background-color: rgba(0, 0, 0, 0.05); 
+                    padding: 15px; 
+                    border-radius: 5px; 
+                    border: 1px solid rgba(128, 128, 128, 0.2);
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+                '>
+                    <p style='margin-bottom: 8px; color: inherit;'>No conclusions available</p>
+                </div>
+                """, unsafe_allow_html=True)
     elif result_type == "proofreading":
         st.header("Proofreading Results")
         
