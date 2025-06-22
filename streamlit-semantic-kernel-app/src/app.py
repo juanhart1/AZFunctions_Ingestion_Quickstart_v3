@@ -10,6 +10,7 @@ from kernel.skills.summarization_skill import SummarizationSkill
 from kernel.skills.proofreading_skill import ProofreadingSkill
 from kernel.skills.comparison_skill import ComparisonSkill
 from utils.helpers import display_file_selector, display_result, display_file_uploader, display_ingestion_status, display_multi_file_selector
+from utils.document_parser import parse_document_summary
 
 # Load environment variables
 load_dotenv()
@@ -100,9 +101,10 @@ elif functionality == "Summarization":
             with st.spinner("Generating summary..."):
                 # Get the summary using the Summarization skill
                 summary = summarization_skill.get_summary(document_id)
-                
-                # Display the summary
-                display_result(summary, "summarization")
+                # Parse the summary using the new parser utility
+                parsed_summary = parse_document_summary(summary)
+                # Display the parsed summary
+                display_result(parsed_summary, "summarization")
 
 elif functionality == "Proofreading":
     st.header("Document Proofreading")
