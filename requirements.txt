@@ -11,7 +11,7 @@ azure-search-documents==11.4.0b8
 azure-ai-documentintelligence
 azure-ai-formrecognizer
 azure-cognitiveservices-vision-computervision
-azure-ai-vision
+# azure-ai-vision
 azure-keyvault-secrets
 azure-core
 openai
@@ -26,7 +26,9 @@ pytz
 langchain
 guidance
 tenacity
-textract
+# textract
 pikepdf
 pdf2image
 poppler-utils
+tiktoken
+mistune
