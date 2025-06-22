@@ -7,7 +7,7 @@ azure-storage-blob
 azure-cosmos
 azure-identity
 azure-mgmt-datafactory
-azure-search-documents==11.4.0b8
+azure-search-documents==11.5.2
 azure-ai-documentintelligence
 azure-ai-formrecognizer
 azure-cognitiveservices-vision-computervision

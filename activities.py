@@ -4,10 +4,35 @@ import json
 import os
 import hashlib
 import asyncio
+import concurrent.futures
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 from aoai_utilities import generate_hierarchical_summary
 from proofreading_utilities import check_spelling, check_grammar, check_clarity, check_style
+
+# Create a thread pool executor for running blocking functions
+# Increase max_workers to match the Azure Function concurrency settings (up to 100)
+thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=32)
+
+async def run_in_threadpool(func, *args, **kwargs):
+    """Run a blocking function in a thread pool to avoid blocking the event loop."""
+    return await asyncio.get_event_loop().run_in_executor(
+        thread_pool, 
+        lambda: func(*args, **kwargs)
+    )
+
+# Async wrappers for proofreading utility functions
+async def async_check_spelling(text):
+    return await run_in_threadpool(check_spelling, text)
+
+async def async_check_grammar(text):
+    return await run_in_threadpool(check_grammar, text)
+
+async def async_check_clarity(text):
+    return await run_in_threadpool(check_clarity, text)
+
+async def async_check_style(text):
+    return await run_in_threadpool(check_style, text)
 
 async def generate_document_summary(activitypayload: str) -> str:
     """
@@ -28,6 +53,10 @@ async def generate_document_summary(activitypayload: str) -> str:
         doc_intel_formatted_results_container = input_data['doc_intel_formatted_results_container']
         summary_container = input_data['summary_container']
         file_name = input_data['file']
+        task_id = input_data.get('task_id', 0)  # Get task ID if available
+        
+        # Log task start with task ID for tracking parallel execution
+        logging.info(f"[TASK-{task_id}] Starting summary generation for {file_name}")
         
         # Initialize blob service client
         blob_service_client = BlobServiceClient.from_connection_string(os.environ["STORAGE_CONN_STR"])
@@ -44,8 +73,53 @@ async def generate_document_summary(activitypayload: str) -> str:
         # Download and read the source content
         source_content = json.loads(source_blob_client.download_blob().readall().decode())
         
-        # Generate hierarchical summary using 'content' instead of 'text'
-        summary = generate_hierarchical_summary(source_content['content'])
+        # Validate content field exists
+        if 'content' not in source_content or not source_content['content']:
+            logging.warning(f"Empty or missing content in source file {file_name}")
+            # Create a placeholder summary
+            summary = {
+                "executive_summary": "No content available for summarization.",
+                "detailed_summary": "The source document did not contain any content to summarize.",
+                "key_topics": ["No content"],
+                "takeaways": ["No content available"]
+            }
+        else:
+            try:
+                # Generate hierarchical summary using 'content' instead of 'text'
+                logging.info(f"[TASK-{task_id}] Generating summary for {file_name} with content length: {len(source_content['content'])}")
+                
+                # Use direct call instead of a thread pool since we're already running in a thread pool
+                # This avoids nesting thread pools which can lead to thread starvation
+                summary_start_time = datetime.now()
+                summary = generate_hierarchical_summary(source_content['content'])
+                summary_end_time = datetime.now()
+                summary_duration = (summary_end_time - summary_start_time).total_seconds()
+                
+                logging.info(f"[TASK-{task_id}] Summary generation for {file_name} completed in {summary_duration:.2f} seconds")
+                
+                # Validate the summary has all expected fields
+                expected_fields = ["executive_summary", "detailed_summary", "key_topics", "takeaways"]
+                missing_fields = [field for field in expected_fields if field not in summary]
+                
+                if missing_fields:
+                    logging.warning(f"Summary is missing expected fields: {missing_fields}")
+                    # Add placeholder values for missing fields
+                    for field in missing_fields:
+                        if field in ["executive_summary", "detailed_summary"]:
+                            summary[field] = "Summary generation was incomplete."
+                        else:  # key_topics and takeaways are lists
+                            summary[field] = ["Summary generation was incomplete"]
+                
+                logging.info(f"[TASK-{task_id}] Successfully generated summary for {file_name}")
+            except Exception as e:
+                logging.error(f"[TASK-{task_id}] Error generating summary for {file_name}: {str(e)}")
+                # Return a fallback summary
+                summary = {
+                    "executive_summary": "Summary generation encountered an error.",
+                    "detailed_summary": f"We were unable to generate a summary due to: {str(e)}",
+                    "key_topics": ["Error during processing"],
+                    "takeaways": ["Please review the original document"]
+                }
         
         # Create summary record with metadata
         summary_record = {
@@ -63,10 +137,11 @@ async def generate_document_summary(activitypayload: str) -> str:
         summary_blob = summary_container_client.get_blob_client(summary_file_name)
         summary_blob.upload_blob(json.dumps(summary_record), overwrite=True)
         
+        logging.info(f"[TASK-{task_id}] Successfully generated and uploaded summary for {file_name}")
         return summary_file_name
         
     except Exception as e:
-        logging.error(f"Error in generate_document_summary: {str(e)}")
+        logging.error(f"[TASK-{task_id}] Error in generate_document_summary: {str(e)}")
         raise
 
 async def generate_page_proofread(activitypayload: str) -> str:
@@ -134,20 +209,30 @@ async def generate_page_proofread(activitypayload: str) -> str:
         
         for attempt in range(max_retries):
             try:
-                # Process each check separately for better error handling
-                for check_type, check_func in [
-                    ('spelling', check_spelling),
-                    ('grammar', check_grammar),
-                    ('clarity', check_clarity),
-                    ('style', check_style)
-                ]:
-                    try:
-                        logging.info(f"Starting {check_type} check (attempt {attempt + 1}/{max_retries})")
-                        results = check_func(content)
-                        proofread_results[check_type] = results
-                        logging.info(f"Completed {check_type} check, found {len(results)} issues")
-                    except Exception as check_error:
-                        logging.error(f"Error in {check_type} check: {str(check_error)}", exc_info=True)
+                # Define check functions to run in parallel
+                check_tasks = {
+                    'spelling': async_check_spelling(content),
+                    'grammar': async_check_grammar(content),
+                    'clarity': async_check_clarity(content),
+                    'style': async_check_style(content)
+                }
+                
+                # Execute all checks in parallel using asyncio.gather
+                logging.info(f"Running all proofread checks in parallel (attempt {attempt + 1}/{max_retries})")
+                results = await asyncio.gather(
+                    *check_tasks.values(),
+                    return_exceptions=True  # This ensures one failed check doesn't cancel the others
+                )
+                
+                # Process results for each check
+                for (check_type, _), result in zip(check_tasks.items(), results):
+                    # If the check succeeded, store the results
+                    if not isinstance(result, Exception):
+                        proofread_results[check_type] = result
+                        logging.info(f"Completed {check_type} check, found {len(result)} issues")
+                    # If the check failed, log the error and leave empty results
+                    else:
+                        logging.error(f"Error in {check_type} check: {str(result)}", exc_info=True)
                         proofread_results[check_type] = []
                 
                 # If we got here, we have at least partial results

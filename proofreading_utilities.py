@@ -8,11 +8,14 @@ def _call_azure_openai(prompt, content):
     """Helper function to make Azure OpenAI API calls"""
     base_endpoint = os.environ["AOAI_ENDPOINT"].rstrip('/')
     key = os.environ["AOAI_KEY"]
-    model = os.environ.get("AOAI_GPT_MODEL", "gpt-4o")
-    deployment_name = model
-    api_version = "2024-02-15-preview"
+    model = os.environ.get("AOAI_GPT_MODEL", "gpt-4o")  # Default to gpt-4o if not specified
+    deployment_name = os.environ.get("AOAI_DEPLOYMENT_NAME", model)  # Use explicit deployment name if available
+    api_version = os.environ.get("AOAI_API_VERSION", "2023-05-15")  # Use API version from env or default
     max_retries = 5
     retry_delay = 5
+    
+    # Log model and deployment information for debugging
+    logging.info(f"Using model: {model}, deployment: {deployment_name}, API version: {api_version}")
     
     # Construct the full endpoint URL
     endpoint = f"{base_endpoint}/openai/deployments/{deployment_name}/chat/completions?api-version={api_version}"
@@ -22,6 +25,7 @@ def _call_azure_openai(prompt, content):
         "api-key": key
     }
     
+    # Build request payload without response_format for compatibility with older API versions
     data = {
         "messages": [
             {
@@ -34,16 +38,111 @@ def _call_azure_openai(prompt, content):
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 10000,
-        "response_format": {"type": "json_object"}
+        "max_tokens": 4000  # Reduced max tokens to avoid potential limits
     }
+    
+    # Only add response_format for newer API versions that support it
+    if api_version.startswith("2024"):
+        data["response_format"] = {"type": "json_object"}
     
     for attempt in range(max_retries):
         try:
             logging.info(f"Making Azure OpenAI request, attempt {attempt + 1}/{max_retries}")
             response = requests.post(endpoint, headers=headers, json=data)
-            response.raise_for_status()
+            
+            # More detailed error logging
+            if response.status_code != 200:
+                error_detail = response.text if response.text else "No error details available"
+                logging.error(f"Azure OpenAI API error: HTTP {response.status_code}: {error_detail}")
+                
+                # Handle content filtering errors specifically
+                content_filtered = False
+                if response.status_code == 400:
+                    try:
+                        error_json = response.json()
+                        error_message = error_json.get('error', {}).get('message', '')
+                        if 'content management policy' in error_message or 'content filter' in error_message.lower():
+                            content_filtered = True
+                            logging.warning("Content filtered by Azure OpenAI safety system")
+                    except Exception:
+                        pass  # Continue with normal error handling if we can't parse the response
+                
+                # If we get a 400 error related to the model or content filtering, try a fallback approach
+                if (response.status_code == 400 or response.status_code == 404) and attempt == 0:
+                    # Define fallback models in order of preference
+                    fallback_models = []
+                    
+                    # Primary fallback model is gpt-4 if we're not already using it
+                    if deployment_name != "gpt-4":
+                        fallback_models.append("gpt-4")
+                    
+                    # Secondary fallback is gpt-35-turbo
+                    if deployment_name != "gpt-35-turbo":
+                        fallback_models.append("gpt-35-turbo")
+                    
+                    # Try each fallback model
+                    for fallback_model in fallback_models:
+                        try:
+                            fallback_endpoint = f"{base_endpoint}/openai/deployments/{fallback_model}/chat/completions?api-version=2023-05-15"
+                            logging.warning(f"Trying fallback model: {fallback_model}")
+                            
+                            # Use simplified prompt for fallback to reduce chances of content filtering
+                            if content_filtered:
+                                # Simplify the system prompt to avoid content filtering
+                                fallback_data = {
+                                    "messages": [
+                                        {
+                                            "role": "system", 
+                                            "content": "You are a helpful assistant. Analyze the text and respond in JSON format."
+                                        },
+                                        {
+                                            "role": "user",
+                                            "content": f"Analyze this text and provide suggestions in JSON format: {content[:1000]}..."
+                                        }
+                                    ],
+                                    "temperature": 0.1,
+                                    "max_tokens": 2000
+                                }
+                            else:
+                                # Use original prompt if not content filtered
+                                fallback_data = {
+                                    "messages": data["messages"],
+                                    "temperature": 0.1,
+                                    "max_tokens": 2000
+                                }
+                            
+                            fallback_response = requests.post(fallback_endpoint, headers=headers, json=fallback_data)
+                            
+                            if fallback_response.status_code == 200:
+                                logging.info(f"Fallback to {fallback_model} succeeded")
+                                response = fallback_response
+                                break
+                            else:
+                                fallback_error = fallback_response.text if fallback_response.text else f"HTTP {fallback_response.status_code}"
+                                logging.error(f"Fallback to {fallback_model} failed: {fallback_error}")
+                        except Exception as fallback_error:
+                            logging.error(f"Fallback to {fallback_model} failed: {str(fallback_error)}")
+                    
+                    # If we reached here and still have an error status, all fallbacks failed
+                    if response.status_code != 200:
+                        logging.error("All fallback attempts failed")
+            
+            # Check if we have a successful response after all attempts
+            if response.status_code != 200:
+                if attempt == max_retries - 1:
+                    logging.warning("All attempts failed, returning empty suggestions array")
+                    return {"suggestions": []}
+                continue  # Try again if we have retries left
+            
             result = response.json()
+            
+            # Defensive check for choices
+            if 'choices' not in result or not result['choices']:
+                logging.error(f"No choices in API response: {json.dumps(result)}")
+                if attempt < max_retries - 1:
+                    continue  # Try again
+                return {"suggestions": []}
+            
             content = result['choices'][0]['message']['content']
             logging.debug(f"Azure OpenAI raw response: {content}")
             
@@ -101,15 +200,29 @@ def _call_azure_openai(prompt, content):
                 return {"suggestions": []}
                 
         except requests.exceptions.RequestException as e:
-            if 'exceeded token rate' in str(e).lower() or response.status_code == 429:
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (attempt + 1))
-                    continue
             logging.error(f"Error calling Azure OpenAI: {str(e)}")
-            raise
+            if 'exceeded token rate' in str(e).lower() or (hasattr(response, 'status_code') and response.status_code == 429):
+                if attempt < max_retries - 1:
+                    retry_time = retry_delay * (attempt + 1)
+                    logging.warning(f"Rate limit exceeded. Retrying in {retry_time} seconds...")
+                    time.sleep(retry_time)
+                    continue
+            
+            # For the last attempt, don't raise the error, just return empty results
+            if attempt == max_retries - 1:
+                logging.warning("All retries failed, returning empty suggestions array")
+                return {"suggestions": []}
+                
         except Exception as e:
             logging.error(f"Error processing Azure OpenAI response: {str(e)}")
-            raise
+            
+            # For the last attempt, don't raise the error, just return empty results
+            if attempt == max_retries - 1:
+                logging.warning("All retries failed due to processing errors, returning empty suggestions array")
+                return {"suggestions": []}
+    
+    # This should never be reached due to the return in the exception handler above
+    return {"suggestions": []}
 
 def check_spelling(text: str) -> list:
     """Check text for spelling errors using Azure OpenAI."""

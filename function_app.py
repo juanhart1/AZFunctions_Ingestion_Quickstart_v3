@@ -19,7 +19,7 @@ from azure.identity import DefaultAzureCredential
 from pypdf import PdfReader, PdfWriter
 import pikepdf
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, timedelta
 import filetype
 import fitz as pymupdf
 from PIL import Image
@@ -443,204 +443,94 @@ def pdf_orchestrator(context):
             json.dumps({'status_record': status_record, 'record_id': cosmos_record_id})
         )
 
-    # Generate page-level proofreading results
-    try:
-        context.set_custom_status('Starting Page-Level Proofreading')
-        status_record['status_message'] = 'Starting Page-Level Proofreading'
-        status_record['processing_progress'] = 0.62
-        status_record['status'] = 1
-        if cosmos_logging:
-            yield context.call_activity("update_status_record", json.dumps(status_record))
-            
-        proofread_tasks = []
-        for doc_result in doc_intel_formatted_results:
-            proofread_tasks.append(
-                context.call_activity_with_retry(
-                    "generate_page_proofread_activity",
-                    retry_options,
-                    json.dumps({
-                        'doc_intel_formatted_results_container': doc_intel_formatted_results_container,
-                        'proofreading_container': proofreading_container,
-                        'file': doc_result
-                    })
-                )
-            )
-        proofread_results = yield context.task_all(proofread_tasks)
-        
-        context.set_custom_status('Page-Level Proofreading Complete')
-        status_record['status_message'] = 'Page-Level Proofreading Complete'
-        status_record['processing_progress'] = 0.63
-        status_record['status'] = 1
-        if cosmos_logging:
-            yield context.call_activity("update_status_record", json.dumps(status_record))
-            
-    except Exception as e:
-        context.set_custom_status('Proofreading Failed During Page Analysis')
-        status_record['status'] = -1
-        status_record['status_message'] = 'Proofreading Failed During Page Analysis'
-        status_record['error_message'] = str(e)
-        status_record['processing_progress'] = status_record.get('processing_progress', 0.0)
-        if cosmos_logging:
-            yield context.call_activity("update_status_record", json.dumps(status_record))
-        raise RuntimeError(f"Failed to generate page proofreading results: {str(e)}")
-
-    # Generate document-level proofreading results
-    try:
-        context.set_custom_status('Starting Document-Level Proofreading')
-        status_record['status_message'] = 'Starting Document-Level Proofreading'
-        status_record['processing_progress'] = 0.64
-        status_record['status'] = 1
-        if cosmos_logging:
-            yield context.call_activity("update_status_record", json.dumps(status_record))
-            
-        doc_proofread_result = yield context.call_activity_with_retry(
-            "generate_document_proofread_activity",
-            retry_options,
-            json.dumps({
-                'source_container': source_container,
-                'proofreading_container': proofreading_container,
-                'parent_file': parent_files[0]  # Assuming single file processing
-            })
-        )
-        
-        context.set_custom_status('Document-Level Proofreading Complete')
-        status_record['status_message'] = 'Document-Level Proofreading Complete'
-        status_record['processing_progress'] = 0.65
-        status_record['status'] = 1
-        if cosmos_logging:
-            yield context.call_activity("update_status_record", json.dumps({** status_record, **{'time_key': 'time_03_proofreading'}}))
-            
-    except Exception as e:
-        context.set_custom_status('Proofreading Failed During Document Analysis')
-        status_record['status'] = -1
-        status_record['status_message'] = 'Proofreading Failed During Document Analysis'
-        status_record['error_message'] = str(e)
-        status_record['processing_progress'] = status_record.get('processing_progress', 0.0)
-        if cosmos_logging:
-            yield context.call_activity("update_status_record", json.dumps(status_record))
-        raise RuntimeError(f"Failed to generate document proofreading results: {str(e)}")        # Generate page-level summaries for each document
-    try:
-        summary_tasks = []
-        for pdf in pdf_pages:
-            summary_tasks.append(context.call_activity("generate_document_summary_activity", json.dumps({
-                'doc_intel_formatted_results_container': doc_intel_formatted_results_container,
-                'summary_container': summaries_container,
-                'file': pdf['child'].replace('.pdf', '.json')
-            })))
-        # Execute all summary tasks and get results 
-        summary_files = yield context.task_all(summary_tasks)
-
-        # Now generate document-level summaries by combining page summaries
-        doc_summary_tasks = []
-        # Group pages by parent document
-        parent_docs = {}
-        for pdf in pdf_pages:
-            parent = pdf['parent']
-            if parent not in parent_docs:
-                parent_docs[parent] = []
-            parent_docs[parent].append(pdf['child'])
-
-        # Create document-level summary for each parent by combining its page summaries
-        for parent_file, child_files in parent_docs.items():
-            doc_summary_tasks.append(context.call_activity("generate_document_level_summary_activity", json.dumps({
-                'source_container': source_container,
-                'summary_container': summaries_container, 
-                'parent_file': parent_file,
-                'page_files': [f.replace('.pdf', '_summary.json') for f in child_files]
-            })))
-        # Execute all document summary tasks
-        document_summary_files = yield context.task_all(doc_summary_tasks)
-
-    except Exception as e:
-        context.set_custom_status('Ingestion Failed During Summary Generation')
-        status_record['status'] = -1
-        status_record['status_message'] = 'Ingestion Failed During Summary Generation'
-        status_record['error_message'] = str(e)
-        status_record['processing_progress'] = 0.0
-        if cosmos_logging:
-            yield context.call_activity("update_status_record", json.dumps(status_record))
-        logging.error(e)
-        raise e
-
-    context.set_custom_status('Summary Generation Completed')
-    status_record['status_message'] = 'Summary Generation Completed'
-    status_record['processing_progress'] = 0.65
-    status_record['status'] = 1
-    if cosmos_logging:
-        yield context.call_activity("update_status_record", json.dumps({** status_record, **{'time_key': 'time_03_summarization'}}))
-
-    #Analyze all pages and determine if there is additional visual content that should be described
-    try:
-        if analyze_images:
-            image_analysis_tasks = []
-            for pdf in pdf_pages:
-                # Append the child file to the extracted_files list
-                extracted_files.append(pdf['child'])
-                # Create a task to analyze the PDF page and append it to the image_analysis_tasks list
-                image_analysis_tasks.append(context.call_activity("analyze_pages_for_embedded_visuals", json.dumps({'child': pdf['child'], 'parent': pdf['parent'], 'pages_container': pages_container, 'image_analysis_results_container': image_analysis_results_container})))
-            # Execute all the extract PDF tasks and get the results
-            analyzed_pdf_files = yield context.task_all(image_analysis_tasks)
-            analyzed_pdf_files = [x for x in analyzed_pdf_files if x is not None]
-
-    except Exception as e:
-        context.set_custom_status('Ingestion Failed During Image Analysis')
-        status_record['status'] = -1
-        status_record['status_message'] = 'Ingestion Failed During Image Analysis'
-        status_record['error_message'] = str(e)
-        status_record['processing_progress'] = 0.0
-        if cosmos_logging:
-            yield context.call_activity("update_status_record", json.dumps(status_record))
-        logging.error(e)
-        raise e
+    # Create parallel task groups for proofreading, summarization, image analysis, and chunking/vectorization
+    parallel_tasks = []
+    task_names = []
     
-    context.set_custom_status('Image Analysis Completed')
-    status_record['status_message'] = 'Image Analysis Completed'
-    status_record['processing_progress'] = 0.7
-    status_record['status'] = 1
-    if cosmos_logging:
-        yield context.call_activity("update_status_record", json.dumps({** status_record, **{'time_key': 'time_03_image_analysis'}}))
-
+    # PARALLEL TASK 1: Proofreading Tasks
+    parallel_tasks.append(context.call_sub_orchestrator("run_proofreading_pipeline", 
+        {
+            "doc_intel_formatted_results": doc_intel_formatted_results,
+            "doc_intel_formatted_results_container": doc_intel_formatted_results_container,
+            "proofreading_container": proofreading_container,
+            "source_container": source_container,
+            "parent_files": parent_files,
+            "status_record": status_record,
+            "cosmos_logging": cosmos_logging
+        }
+    ))
+    task_names.append("proofreading")
     
-    # Assemble chunks based on user specification
-    try:
-        chunking_tasks = []
-        for file in files:
-            # Create a task to process the PDF chunk and append it to the extract_pdf_tasks list
-            chunking_tasks.append(context.call_activity("chunk_extracts", json.dumps({'parent': file, 'source_container': source_container, 'extract_container': extract_container, 'doc_intel_formatted_results_container': doc_intel_formatted_results_container, 'image_analysis_results_container': image_analysis_results_container, 'chunking_strategy': chunking_strategy, 'max_chunk_size': max_chunk_size, 'chunk_overlap': chunk_overlap})))
-        # Execute all the extract PDF tasks and get the results
-        chunked_pdf_files = yield context.task_all(chunking_tasks)
-        chunked_pdf_files = [item for sublist in chunked_pdf_files for item in sublist]
-    except Exception as e:
-        context.set_custom_status('Ingestion Failed During Chunking')
-        status_record['status'] = -1
-        status_record['status_message'] = 'Ingestion Failed During Chunking'
-        status_record['error_message'] = str(e)
-        status_record['processing_progress'] = 0.0
-        if cosmos_logging:
-            yield context.call_activity("update_status_record", json.dumps(status_record))
-        logging.error(e)
-        raise e
+    # PARALLEL TASK 2: Summarization Tasks
+    parallel_tasks.append(context.call_sub_orchestrator("run_summarization_pipeline", 
+        {
+            "pdf_pages": pdf_pages,
+            "doc_intel_formatted_results_container": doc_intel_formatted_results_container,
+            "summaries_container": summaries_container,
+            "source_container": source_container,
+            "status_record": status_record,
+            "cosmos_logging": cosmos_logging
+        }
+    ))
+    task_names.append("summarization")
     
-    context.set_custom_status('Extract Chunking Completed')
-    status_record['status_message'] = 'Extract Chunking Completed'
-    status_record['processing_progress'] = 0.7
-    status_record['status'] = 1
-    if cosmos_logging:
-        yield context.call_activity("update_status_record", json.dumps({** status_record, **{'time_key': 'time_04_chunking'}}))
-
-    # For each extracted PDF file, generate embeddings and save the results
-    try:
-        generate_embeddings_tasks = []
-        for file in chunked_pdf_files:
-            # Create a task to generate embeddings for the extracted file and append it to the generate_embeddings_tasks list
-            generate_embeddings_tasks.append(context.call_activity("generate_extract_embeddings", json.dumps({'extract_container': extract_container, 'file': file, 'embedding_model': embedding_model})))
-        # Execute all the generate embeddings tasks and get the results
-        processed_documents = yield context.task_all(generate_embeddings_tasks)
+    # PARALLEL TASK 3: Image Analysis (if enabled)
+    if analyze_images:
+        parallel_tasks.append(context.call_sub_orchestrator("run_image_analysis_pipeline", 
+            {
+                "pdf_pages": pdf_pages,
+                "pages_container": pages_container,
+                "image_analysis_results_container": image_analysis_results_container,
+                "extracted_files": extracted_files,
+                "status_record": status_record,
+                "cosmos_logging": cosmos_logging
+            }
+        ))
+        task_names.append("image_analysis")
         
+    # PARALLEL TASK 4: Chunking and Embedding Generation
+    parallel_tasks.append(context.call_sub_orchestrator("run_chunking_embedding_pipeline", 
+        {
+            "files": files,
+            "source_container": source_container,
+            "extract_container": extract_container,
+            "doc_intel_formatted_results_container": doc_intel_formatted_results_container,
+            "image_analysis_results_container": image_analysis_results_container,
+            "chunking_strategy": chunking_strategy,
+            "max_chunk_size": max_chunk_size,
+            "chunk_overlap": chunk_overlap,
+            "embedding_model": embedding_model,
+            "status_record": status_record,
+            "cosmos_logging": cosmos_logging
+        }
+    ))
+    task_names.append("chunking_embedding")
+    
+    # Wait for all parallel tasks to complete
+    try:
+        context.set_custom_status('Running Parallel Processing Pipelines')
+        all_results = yield context.task_all(parallel_tasks)
+        
+        # Map results to their respective names
+        results = {}
+        for i, name in enumerate(task_names):
+            results[name] = all_results[i]
+            context.set_custom_status(f'Completed {name} pipeline')
+            
+        # Store necessary results from parallel processing
+        if "chunking_embedding" in results:
+            processed_documents = results["chunking_embedding"]
+            
+        context.set_custom_status('All Parallel Processing Completed')
+        status_record['status_message'] = 'All Processing Pipelines Completed'
+        status_record['processing_progress'] = 0.8
+        status_record['status'] = 1
+        if cosmos_logging:
+            yield context.call_activity("update_status_record", json.dumps({** status_record, **{'time_key': 'time_05_all_processing'}}))
     except Exception as e:
-        context.set_custom_status('Ingestion Failed During Vectorization')
+        context.set_custom_status('Parallel Processing Failed')
         status_record['status'] = -1
-        status_record['status_message'] = 'Ingestion Failed During Vectorization'
+        status_record['status_message'] = 'Parallel Processing Failed'
         status_record['error_message'] = str(e)
         status_record['processing_progress'] = 0.0
         if cosmos_logging:
@@ -1068,7 +958,7 @@ def audio_video_orchestrator(context):
     status_record['processing_progress'] = 1
     status_record['status'] = 10
     if cosmos_logging:
-        yield context.call_activity("update_status_record", json.dumps(status_record))
+        yield context.call_activity("update_status_record", json.dumps({** status_record, **{'time_key': 'time_06_indexing'}}))
 
     ###################### DATA INDEXING END ######################
 
@@ -3073,7 +2963,7 @@ def proofreading_orchestrator(context):
             
             # Call the page proofread activity with retry options
             task = context.call_activity_with_retry(
-                "generate_page_proofread",
+                "generate_page_proofread_activity",
                 retry_options,
                 json.dumps(page_payload)
             )
@@ -3106,3 +2996,238 @@ def proofreading_orchestrator(context):
         error_msg = f"Error in proofreading_orchestrator: {str(e)}"
         context.set_custom_status(error_msg)
         raise
+
+@app.orchestration_trigger(context_name="context")
+def run_proofreading_pipeline(context):
+    """
+    Sub-orchestrator to run the proofreading pipeline in parallel with other processing.
+    """
+    # Get parameters from context
+    params = context.get_input()
+    
+    doc_intel_formatted_results = params.get("doc_intel_formatted_results")
+    doc_intel_formatted_results_container = params.get("doc_intel_formatted_results_container")
+    proofreading_container = params.get("proofreading_container")
+    source_container = params.get("source_container")
+    parent_files = params.get("parent_files")
+    status_record = params.get("status_record")
+    cosmos_logging = params.get("cosmos_logging")
+    
+    # Setup retry options
+    first_retry_interval_in_milliseconds = 5000
+    max_number_of_attempts = 2
+    retry_options = df.RetryOptions(first_retry_interval_in_milliseconds, max_number_of_attempts)
+    
+    try:
+        context.set_custom_status('Starting Page-Level Proofreading')
+        
+        # Generate page-level proofreading results
+        proofread_tasks = []
+        for doc_result in doc_intel_formatted_results:
+            proofread_tasks.append(
+                context.call_activity_with_retry(
+                    "generate_page_proofread_activity",
+                    retry_options,
+                    json.dumps({
+                        'doc_intel_formatted_results_container': doc_intel_formatted_results_container,
+                        'proofreading_container': proofreading_container,
+                        'file': doc_result
+                    })
+                )
+            )
+        proofread_results = yield context.task_all(proofread_tasks)
+        
+        context.set_custom_status('Page-Level Proofreading Complete')
+        
+        # Generate document-level proofreading results
+        doc_proofread_result = yield context.call_activity_with_retry(
+            "generate_document_proofread_activity",
+            retry_options,
+            json.dumps({
+                'source_container': source_container,
+                'proofreading_container': proofreading_container,
+                'parent_file': parent_files[0]  # Assuming single file processing
+            })
+        )
+        
+        context.set_custom_status('Document-Level Proofreading Complete')
+        
+        # Return the results if needed
+        return {
+            "page_level": proofread_results,
+            "doc_level": doc_proofread_result
+        }
+    except Exception as e:
+        context.set_custom_status('Proofreading Pipeline Failed')
+        raise RuntimeError(f"Failed in proofreading pipeline: {str(e)}")
+
+@app.orchestration_trigger(context_name="context")
+def run_summarization_pipeline(context):
+    """
+    Sub-orchestrator to run the summarization pipeline in parallel with other processing.
+    """
+    # Get parameters from context
+    params = context.get_input()
+    
+    pdf_pages = params.get("pdf_pages")
+    doc_intel_formatted_results_container = params.get("doc_intel_formatted_results_container")
+    summaries_container = params.get("summaries_container")
+    source_container = params.get("source_container")
+    status_record = params.get("status_record")
+    cosmos_logging = params.get("cosmos_logging")
+    
+    try:
+        context.set_custom_status('Starting Summarization Pipeline')
+        
+        # Generate page-level summaries in parallel batches for better performance
+        summary_tasks = []
+        for i, pdf in enumerate(pdf_pages):
+            # Add a small staggered delay between task submissions to reduce contention
+            if i > 0 and i % 5 == 0:  # Add a small delay every 5 tasks
+                from datetime import timedelta
+                yield context.create_timer(context.current_utc_datetime + timedelta(seconds=1))
+                
+            summary_tasks.append(context.call_activity("generate_document_summary_activity", json.dumps({
+                'doc_intel_formatted_results_container': doc_intel_formatted_results_container,
+                'summary_container': summaries_container,
+                'file': pdf['child'].replace('.pdf', '.json'),
+                'task_id': i  # Add a task ID for tracking purposes
+            })))
+        
+        # Process summary tasks in parallel with task_all
+        # Each individual summary task also uses internal parallelization
+        context.set_custom_status('Generating page summaries in parallel')
+        summary_files = yield context.task_all(summary_tasks)
+
+        # Group pages by parent document for document-level summaries
+        doc_summary_tasks = []
+        parent_docs = {}
+        for pdf in pdf_pages:
+            parent = pdf['parent']
+            if parent not in parent_docs:
+                parent_docs[parent] = []
+            parent_docs[parent].append(pdf['child'])
+
+        # Create document-level summaries
+        for parent_file, child_files in parent_docs.items():
+            doc_summary_tasks.append(context.call_activity("generate_document_level_summary_activity", json.dumps({
+                'source_container': source_container,
+                'summary_container': summaries_container, 
+                'parent_file': parent_file,
+                'page_files': [f.replace('.pdf', '_summary.json') for f in child_files]
+            })))
+            
+        # Wait for all document-level summaries to complete
+        document_summary_files = yield context.task_all(doc_summary_tasks)
+        
+        context.set_custom_status('Summarization Pipeline Complete')
+        
+        # Return the results
+        return {
+            "page_summaries": summary_files,
+            "document_summaries": document_summary_files
+        }
+    except Exception as e:
+        context.set_custom_status('Summarization Pipeline Failed')
+        raise RuntimeError(f"Failed in summarization pipeline: {str(e)}")
+
+@app.orchestration_trigger(context_name="context")
+def run_image_analysis_pipeline(context):
+    """
+    Sub-orchestrator to run the image analysis pipeline in parallel with other processing.
+    """
+    # Get parameters from context
+    params = context.get_input()
+    
+    pdf_pages = params.get("pdf_pages")
+    pages_container = params.get("pages_container")
+    image_analysis_results_container = params.get("image_analysis_results_container")
+    extracted_files = params.get("extracted_files")
+    status_record = params.get("status_record")
+    cosmos_logging = params.get("cosmos_logging")
+    
+    try:
+        context.set_custom_status('Starting Image Analysis Pipeline')
+        
+        image_analysis_tasks = []
+        for pdf in pdf_pages:
+            # Create a task to analyze the PDF page and append it to the image_analysis_tasks list
+            image_analysis_tasks.append(context.call_activity("analyze_pages_for_embedded_visuals", json.dumps({
+                'child': pdf['child'], 
+                'parent': pdf['parent'], 
+                'pages_container': pages_container, 
+                'image_analysis_results_container': image_analysis_results_container
+            })))
+            
+        # Execute all the image analysis tasks and get the results
+        analyzed_pdf_files = yield context.task_all(image_analysis_tasks)
+        analyzed_pdf_files = [x for x in analyzed_pdf_files if x is not None]
+        
+        context.set_custom_status('Image Analysis Pipeline Complete')
+        
+        # Return the results
+        return analyzed_pdf_files
+    except Exception as e:
+        context.set_custom_status('Image Analysis Pipeline Failed')
+        raise RuntimeError(f"Failed in image analysis pipeline: {str(e)}")
+
+@app.orchestration_trigger(context_name="context")
+def run_chunking_embedding_pipeline(context):
+    """
+    Sub-orchestrator to run the chunking and embedding generation pipeline in parallel with other processing.
+    """
+    # Get parameters from context
+    params = context.get_input()
+    
+    files = params.get("files")
+    source_container = params.get("source_container")
+    extract_container = params.get("extract_container")
+    doc_intel_formatted_results_container = params.get("doc_intel_formatted_results_container")
+    image_analysis_results_container = params.get("image_analysis_results_container")
+    chunking_strategy = params.get("chunking_strategy")
+    max_chunk_size = params.get("max_chunk_size")
+    chunk_overlap = params.get("chunk_overlap")
+    embedding_model = params.get("embedding_model")
+    status_record = params.get("status_record")
+    cosmos_logging = params.get("cosmos_logging")
+    
+    try:
+        context.set_custom_status('Starting Chunking & Embedding Pipeline')
+        
+        # Step 1: Assemble chunks based on user specification
+        chunking_tasks = []
+        for file in files:
+            chunking_tasks.append(context.call_activity("chunk_extracts", json.dumps({
+                'parent': file, 
+                'source_container': source_container, 
+                'extract_container': extract_container, 
+                'doc_intel_formatted_results_container': doc_intel_formatted_results_container, 
+                'image_analysis_results_container': image_analysis_results_container, 
+                'chunking_strategy': chunking_strategy, 
+                'max_chunk_size': max_chunk_size, 
+                'chunk_overlap': chunk_overlap
+            })))
+            
+        chunked_pdf_files = yield context.task_all(chunking_tasks)
+        chunked_pdf_files = [item for sublist in chunked_pdf_files for item in sublist]
+        
+        context.set_custom_status('Chunking Complete, Starting Embedding Generation')
+        
+        # Step 2: Generate embeddings for each chunk
+        generate_embeddings_tasks = []
+        for file in chunked_pdf_files:
+            generate_embeddings_tasks.append(context.call_activity("generate_extract_embeddings", json.dumps({
+                'extract_container': extract_container, 
+                'file': file, 
+                'embedding_model': embedding_model
+            })))
+            
+        processed_documents = yield context.task_all(generate_embeddings_tasks)
+        
+        context.set_custom_status('Chunking & Embedding Pipeline Complete')
+        
+        # Return the processed documents with embeddings
+        return processed_documents
+    except Exception as e:
+        context.set_custom_status('Chunking & Embedding Pipeline Failed')
+        raise RuntimeError(f"Failed in chunking and embedding pipeline: {str(e)}")

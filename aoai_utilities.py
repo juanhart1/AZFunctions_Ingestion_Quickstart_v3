@@ -341,9 +341,16 @@ def generate_hierarchical_summary(content):
     
     Return the summary as a JSON object with these sections."""
 
+    # Truncate content if it's too long to avoid token limits
+    max_content_length = 30000
+    if len(content) > max_content_length:
+        content_preview = content[:max_content_length] + "... [content truncated for length]"
+    else:
+        content_preview = content
+
     user_msg = f"""Generate a hierarchical summary of this document content:
 
-    {content}"""
+    {content_preview}"""
 
     messages = [
         {"role": "system", "content": sys_msg},
@@ -352,36 +359,295 @@ def generate_hierarchical_summary(content):
 
     api_base = os.environ['AOAI_ENDPOINT']
     api_key = os.environ['AOAI_KEY']
-    deployment_name = os.environ['AOAI_GPT_MODEL']
+    deployment_name = os.environ.get('AOAI_DEPLOYMENT_NAME', os.environ.get('AOAI_GPT_MODEL', 'gpt-4o'))
+    api_version = os.environ.get('AOAI_API_VERSION', '2023-05-15')
+
+    logging.info(f"Using model: {deployment_name}, API version: {api_version} for summary generation")
 
     base_url = f"{api_base}openai/deployments/{deployment_name}"
     headers = {
         "Content-Type": "application/json",
         "api-key": api_key
     }
-    endpoint = f"{base_url}/chat/completions?api-version=2025-01-01-preview"
+    
+    endpoint = f"{base_url}/chat/completions?api-version={api_version}"
     data = {
         "messages": messages,
         "temperature": 0.3,
         "top_p": 0.95,
-        "max_tokens": 1000,
-        "response_format": {"type": "json_object"}
+        "max_tokens": 1000
     }
+    
+    # Only add response_format for newer API versions
+    if api_version.startswith("2024"):
+        data["response_format"] = {"type": "json_object"}
 
     processed = False
-    while not processed:
+    max_retries = 5
+    retry_count = 0
+    last_error = None
+    
+    while not processed and retry_count < max_retries:
         try:
+            logging.info(f"Making hierarchical summary API request, attempt {retry_count + 1}/{max_retries}")
             response = requests.post(endpoint, headers=headers, data=json.dumps(data))
-            if response.status_code == 429:
-                time.sleep(5)
-                continue
-            summary = response.json()['choices'][0]['message']['content']
+            
+            # Log response status and info for debugging
+            logging.info(f"Summary API response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                error_detail = response.text if response.text else "No error details available"
+                logging.error(f"Azure OpenAI API error: HTTP {response.status_code}: {error_detail}")
+                
+                # Handle content filtering errors specifically
+                content_filtered = False
+                if response.status_code == 400:
+                    try:
+                        error_json = response.json()
+                        error_message = error_json.get('error', {}).get('message', '')
+                        if 'content management policy' in error_message or 'content filter' in error_message.lower():
+                            content_filtered = True
+                            logging.warning("Content filtered by Azure OpenAI safety system")
+                    except Exception:
+                        pass  # Continue with normal error handling
+                
+                # If we get a 400 or 404 error, try fallback models
+                if (response.status_code == 400 or response.status_code == 404) and retry_count == 0:
+                    # Define fallback models in order of preference
+                    fallback_models = []
+                    
+                    # Primary fallback model is gpt-4 if we're not already using it
+                    if deployment_name != "gpt-4":
+                        fallback_models.append("gpt-4")
+                    
+                    # Secondary fallback is gpt-35-turbo
+                    if deployment_name != "gpt-35-turbo":
+                        fallback_models.append("gpt-35-turbo")
+                    
+                    # Try each fallback model
+                    for fallback_model in fallback_models:
+                        try:
+                            fallback_endpoint = f"{api_base}openai/deployments/{fallback_model}/chat/completions?api-version=2023-05-15"
+                            logging.warning(f"Trying fallback model: {fallback_model}")
+                            
+                            # Use simplified prompt for fallback to reduce chances of content filtering
+                            if content_filtered:
+                                # Simplify the system prompt to avoid content filtering
+                                fallback_messages = [
+                                    {"role": "system", "content": "You are a helpful assistant. Create a document summary in JSON format."},
+                                    {"role": "user", "content": f"Summarize this text in JSON format with executive_summary, detailed_summary, key_topics, and takeaways fields: {content_preview[:5000]}..."}
+                                ]
+                            else:
+                                # Use original messages if not content filtered
+                                fallback_messages = messages
+                            
+                            fallback_data = {
+                                "messages": fallback_messages,
+                                "temperature": 0.3,
+                                "max_tokens": 800
+                            }
+                            
+                            fallback_response = requests.post(fallback_endpoint, headers=headers, json=fallback_data)
+                            
+                            if fallback_response.status_code == 200:
+                                logging.info(f"Fallback to {fallback_model} succeeded")
+                                response = fallback_response
+                                break
+                            else:
+                                fallback_error = fallback_response.text if fallback_response.text else f"HTTP {fallback_response.status_code}"
+                                logging.error(f"Fallback to {fallback_model} failed: {fallback_error}")
+                        except Exception as fallback_error:
+                            logging.error(f"Fallback to {fallback_model} failed: {str(fallback_error)}")
+                
+                # If still not successful, move to next retry
+                if response.status_code != 200:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        sleep_time = 2 * retry_count
+                        logging.warning(f"Retrying in {sleep_time} seconds")
+                        time.sleep(sleep_time)
+                    continue
+                
+            # Process successful response
+            if response.status_code == 200:
+                resp_json = response.json()
+                
+                # Defensive programming - check if 'choices' exists in the response
+                if 'choices' in resp_json and len(resp_json['choices']) > 0:
+                    message = resp_json['choices'][0].get('message', {})
+                    content = message.get('content', '')
+                    
+                    if content:
+                        # Try to parse as JSON first
+                        try:
+                            parsed_json = json.loads(content)
+                            # Ensure a standardized return format
+                            return {
+                                "executive_summary": parsed_json.get("executive_summary", 
+                                                    parsed_json.get("Executive Summary", 
+                                                    "No executive summary available")),
+                                "detailed_summary": parsed_json.get("detailed_summary", 
+                                                   parsed_json.get("Detailed Summary", 
+                                                   "No detailed summary available")),
+                                "key_topics": parsed_json.get("key_topics", 
+                                             parsed_json.get("Key Topics/Themes", [])),
+                                "takeaways": parsed_json.get("takeaways", 
+                                            parsed_json.get("Main Conclusions/Takeaways", []))
+                            }
+                        except json.JSONDecodeError:
+                            # Not valid JSON, try to extract structured data using regex
+                            import re
+                            
+                            # Check if the response has markdown code blocks with JSON
+                            json_block_match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
+                            if json_block_match:
+                                try:
+                                    json_str = json_block_match.group(1)
+                                    parsed_json = json.loads(json_str)
+                                    
+                                    # Use the same standardization logic as above
+                                    standardized_output = {
+                                        "executive_summary": None,
+                                        "detailed_summary": None,
+                                        "key_topics": [],
+                                        "takeaways": []
+                                    }
+                                    
+                                    field_mappings = {
+                                        "executive_summary": ["executive_summary", "executive summary", "Executive Summary", "executive", "summary"],
+                                        "detailed_summary": ["detailed_summary", "detailed summary", "Detailed Summary", "detailed", "full summary", "full_summary"],
+                                        "key_topics": ["key_topics", "key topics", "Key Topics", "topics", "Topics", "key_themes", "themes", "Themes"],
+                                        "takeaways": ["takeaways", "Takeaways", "conclusions", "Conclusions", "key_findings", "findings", "main_points"]
+                                    }
+                                    
+                                    for target_field, source_fields in field_mappings.items():
+                                        for source_field in source_fields:
+                                            if source_field in parsed_json:
+                                                standardized_output[target_field] = parsed_json[source_field]
+                                                break
+                                    
+                                    # Ensure list fields are properly formatted
+                                    for list_field in ["key_topics", "takeaways"]:
+                                        if standardized_output[list_field] is None:
+                                            standardized_output[list_field] = []
+                                        elif isinstance(standardized_output[list_field], str):
+                                            # Try to parse as JSON array if it looks like one
+                                            if standardized_output[list_field].strip().startswith('[') and standardized_output[list_field].strip().endswith(']'):
+                                                try:
+                                                    standardized_output[list_field] = json.loads(standardized_output[list_field])
+                                                except:
+                                                    # Split by common delimiters
+                                                    items = re.split(r'[,;•\n-]', standardized_output[list_field])
+                                                    standardized_output[list_field] = [item.strip() for item in items if item.strip()]
+                                            else:
+                                                # Just make it a single-item list
+                                                standardized_output[list_field] = [standardized_output[list_field]]
+                                    
+                                    return standardized_output
+                                except:
+                                    # If JSON parsing fails, fall back to text extraction
+                                    pass
+                            
+                            # If we couldn't extract JSON, try to extract key sections using headers
+                            exec_summary = None
+                            detailed_summary = None
+                            topics = []
+                            conclusions = []
+                            
+                            # Try to extract executive summary
+                            exec_match = re.search(r'(?:Executive Summary|EXECUTIVE SUMMARY):\s*(.*?)(?:\n\n|\n#|\n##|$)', content, re.IGNORECASE | re.DOTALL)
+                            if exec_match:
+                                exec_summary = exec_match.group(1).strip()
+                            
+                            # Try to extract detailed summary
+                            detailed_match = re.search(r'(?:Detailed Summary|DETAILED SUMMARY|Full Summary):\s*(.*?)(?:\n\n|\n#|\n##|$)', content, re.IGNORECASE | re.DOTALL)
+                            if detailed_match:
+                                detailed_summary = detailed_match.group(1).strip()
+                            
+                            # Try to extract topics
+                            topics_match = re.search(r'(?:Key Topics|TOPICS|Themes|KEY THEMES):\s*(.*?)(?:\n\n|\n#|\n##|$)', content, re.IGNORECASE | re.DOTALL)
+                            if topics_match:
+                                topics_text = topics_match.group(1).strip()
+                                # Check for bullet points
+                                if '-' in topics_text or '•' in topics_text or '*' in topics_text:
+                                    # Split by bullet markers
+                                    topics_items = re.split(r'\s*[-•*]\s*', topics_text)
+                                    # Remove empty items and clean up
+                                    topics = [item.strip() for item in topics_items if item.strip()]
+                                else:
+                                    # Just use as a single topic
+                                    topics = [topics_text]
+                            
+                            # Try to extract conclusions
+                            concl_match = re.search(r'(?:Conclusions|CONCLUSIONS|Takeaways|KEY TAKEAWAYS):\s*(.*?)(?:\n\n|\n#|\n##|$)', content, re.IGNORECASE | re.DOTALL)
+                            if concl_match:
+                                concl_text = concl_match.group(1).strip()
+                                # Check for bullet points
+                                if '-' in concl_text or '•' in concl_text or '*' in concl_text:
+                                    # Split by bullet markers
+                                    concl_items = re.split(r'\s*[-•*]\s*', concl_text)
+                                    # Remove empty items and clean up
+                                    conclusions = [item.strip() for item in concl_items if item.strip()]
+                                else:
+                                    # Just use as a single conclusion
+                                    conclusions = [concl_text]
+                            
+                            # If we couldn't extract structured data, use the whole content as detailed summary
+                            if not exec_summary and not detailed_summary:
+                                if len(content) > 500:
+                                    exec_summary = content[:500] + "..."
+                                    detailed_summary = content
+                                else:
+                                    exec_summary = content
+                                    detailed_summary = content
+                            
+                            return {
+                                "executive_summary": exec_summary or "No executive summary available",
+                                "detailed_summary": detailed_summary or content,
+                                "key_topics": topics,
+                                "takeaways": conclusions
+                            }
             processed = True
-        except Exception as e:
-            if 'exceeded token rate' in str(e).lower():
-                time.sleep(5)
+            
+        except (KeyError, ValueError) as e:
+            last_error = e
+            retry_count += 1
+            if retry_count < max_retries:
+                sleep_time = 2 * retry_count
+                logging.warning(f"Retry {retry_count} for summary generation: {str(e)}. Retrying in {sleep_time}s")
+                time.sleep(sleep_time)
             else:
-                logging.error(f"Error generating summary: {str(e)}")
-                raise e
-
-    return json.loads(summary)
+                logging.error(f"Failed to generate summary after {max_retries} attempts: {str(e)}")
+                # Return a fallback summary instead of raising an error
+                return {
+                    "executive_summary": "Summary generation failed. Please see the document for details.",
+                    "detailed_summary": "We were unable to generate a summary for this content due to technical issues.",
+                    "key_topics": ["Error during processing"],
+                    "takeaways": ["Please review the original document"]
+                }
+        except Exception as e:
+            last_error = e
+            retry_count += 1
+            if retry_count < max_retries:
+                sleep_time = 2 * retry_count
+                logging.warning(f"Retry {retry_count} for summary generation: {str(e)}. Retrying in {sleep_time}s")
+                time.sleep(sleep_time)
+            else:
+                logging.error(f"Failed to generate summary after {max_retries} attempts: {str(e)}")
+                # Return a fallback summary instead of raising an error
+                return {
+                    "executive_summary": "Summary generation failed. Please see the document for details.",
+                    "detailed_summary": "We were unable to generate a summary for this content due to technical issues.",
+                    "key_topics": ["Error during processing"],
+                    "takeaways": ["Please review the original document"]
+                }
+    
+    # This should never be reached due to the returns above, but just in case
+    if not processed:
+        logging.error("Summary generation did not complete successfully")
+        return {
+            "executive_summary": "Summary generation did not complete.",
+            "detailed_summary": "The summary process did not complete successfully.",
+            "key_topics": ["Processing incomplete"],
+            "takeaways": ["Please review the original document"]
+        }

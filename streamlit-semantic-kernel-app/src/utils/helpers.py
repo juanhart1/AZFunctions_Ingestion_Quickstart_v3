@@ -1,6 +1,8 @@
 import streamlit as st
+import json
 import os
 import json
+import requests
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
 from utils.file_upload import upload_file_to_blob
@@ -202,10 +204,39 @@ def display_file_uploader(container_name, connection_string_var, key=None):
                                     "status": "started",
                                     "document_id": document_id,
                                     "blob_name": blob_name,
-                                    "timestamp": datetime.now().isoformat()
+                                    "timestamp": datetime.now().isoformat(),
+                                    "orchestration_data": ingestion_result.get("data", {})
                                 }
+                                
+                                # Display the initial status
+                                st.success("Document ingestion process started successfully!")
+                                
+                                # If we have the status query URI, show a button to check status
+                                if "data" in ingestion_result and "statusQueryGetUri" in ingestion_result["data"]:
+                                    status_uri = ingestion_result["data"]["statusQueryGetUri"]
+                                    st.info(f"""
+                                    You can track the status of this ingestion process in the "Document Ingestion Status" 
+                                    section below or refresh this page later to see updates.
+                                    """)
+                                
                             else:
                                 st.error(f"Failed to trigger ingestion: {ingestion_result.get('error', 'Unknown error')}")
+                                # Still store the status but mark as failed
+                                st.session_state[f"ingestion_status_{document_id}"] = {
+                                    "status": "failed",
+                                    "document_id": document_id,
+                                    "blob_name": blob_name,
+                                    "timestamp": datetime.now().isoformat(),
+                                    "error": ingestion_result.get('error', 'Unknown error')
+                                }
+                                
+                                # Display a troubleshooting message
+                                st.info("""
+                                **Troubleshooting steps:**
+                                1. Check if the Azure Functions app is running (local or deployed)
+                                2. Verify the function URL in the .env file
+                                3. Check the Azure Functions logs for more details
+                                """)
                     
                     return True, document_id
                 else:
@@ -231,11 +262,32 @@ def display_result(result, result_type):
         # Add horizontal rule for better visual separation
         st.markdown("---")
         
+        # Handle the specific format from the screenshot with ```json { "executive_summary": ... }
+        if isinstance(result, str) and "```json" in result:
+            import re
+            # Extract the actual JSON content
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', result, re.DOTALL)
+            if json_match:
+                try:
+                    extracted_json = json_match.group(1)
+                    parsed_json = json.loads(extracted_json)
+                    
+                    # Use our structured format
+                    result = {
+                        "executive": parsed_json.get("executive_summary", "No executive summary available"),
+                        "detailed": parsed_json.get("detailed_summary", "No detailed summary available"),
+                        "topics": parsed_json.get("key_topics", []),
+                        "conclusions": parsed_json.get("takeaways", [])
+                    }
+                except:
+                    # If parsing fails, just continue with normal processing
+                    pass
+        
         # Check if result is a dict with the new format
         if isinstance(result, dict):
             if "error" in result:
                 st.error(result["error"])
-            elif "executive" in result and "detailed" in result:
+            else:
                 # Create a container for the metadata
                 meta_col1, meta_col2 = st.columns(2)
                 
@@ -255,6 +307,127 @@ def display_result(result, result_type):
                 
                 st.markdown("---")
                 
+                # Extract executive summary with better handling of different formats
+                exec_summary = None
+                
+                # Try different possible paths to the executive summary
+                if "executive" in result:
+                    exec_summary = result['executive']
+                elif "summary" in result and isinstance(result["summary"], dict):
+                    summary_content = result["summary"]
+                    if "executive_summary" in summary_content:
+                        exec_summary = summary_content["executive_summary"]
+                    elif "Executive Summary" in summary_content:
+                        exec_summary = summary_content["Executive Summary"]
+                elif "executive_summary" in result:
+                    exec_summary = result["executive_summary"]
+                
+                # Try to parse the executive summary if it appears to be JSON or contains JSON markers
+                if isinstance(exec_summary, str):
+                    import re
+                    
+                    # Check for ```json pattern in the string
+                    json_block_match = re.search(r'```(?:json)?\s*(.*?)\s*```', exec_summary, re.DOTALL)
+                    if json_block_match:
+                        try:
+                            json_str = json_block_match.group(1)
+                            json_obj = json.loads(json_str)
+                            if isinstance(json_obj, dict) and "executive_summary" in json_obj:
+                                exec_summary = json_obj["executive_summary"]
+                        except:
+                            pass  # Keep original if not valid JSON
+                    
+                    # Check for triple backticks pattern as shown in screenshot
+                    backtick_match = re.search(r'\`\`\`\s*json\s*(\{.*\})', exec_summary, re.DOTALL)
+                    if backtick_match:
+                        try:
+                            json_str = backtick_match.group(1)
+                            json_obj = json.loads(json_str)
+                            if isinstance(json_obj, dict) and "executive_summary" in json_obj:
+                                exec_summary = json_obj["executive_summary"]
+                        except:
+                            pass
+                    
+                    # Check for triple quotes pattern
+                    quotes_match = re.search(r'\"\"\"(?:json)?\s*(.*?)\s*\"\"\"', exec_summary, re.DOTALL)
+                    if quotes_match:
+                        try:
+                            json_str = quotes_match.group(1)
+                            json_obj = json.loads(json_str)
+                            if isinstance(json_obj, dict) and "executive_summary" in json_obj:
+                                exec_summary = json_obj["executive_summary"]
+                        except:
+                            pass
+                            
+                    # Check for the specific format in the screenshot with ```json { "executive_summary": "..." }
+                    special_pattern_match = re.search(r'```\s*json\s*{\s*"executive_summary"\s*:\s*"([^"]+)"', exec_summary, re.DOTALL)
+                    if special_pattern_match:
+                        exec_summary = special_pattern_match.group(1)
+                    
+                    # Check for the format with triple quotes
+                    triple_quotes_match = re.search(r'"""json\s*{\s*"executive_summary"\s*:\s*"([^"]+)"', exec_summary, re.DOTALL)
+                    if triple_quotes_match:
+                        exec_summary = triple_quotes_match.group(1)
+                        
+                    # Look for patterns like "json { "executive_summary": "content" }"
+                    json_obj_match = re.search(r'json\s*{\s*"executive_summary"\s*:\s*"([^"]+)"', exec_summary, re.DOTALL)
+                    if json_obj_match:
+                        exec_summary = json_obj_match.group(1)
+                        
+                    # If it's just a JSON object without markers
+                    if exec_summary.strip().startswith('{'):
+                        try:
+                            json_obj = json.loads(exec_summary)
+                            if isinstance(json_obj, dict) and "executive_summary" in json_obj:
+                                exec_summary = json_obj["executive_summary"]
+                        except:
+                            pass  # Keep original if not valid JSON
+                
+                # Handle if the executive summary is still a complex object
+                if isinstance(exec_summary, dict):
+                    if "executive_summary" in exec_summary:
+                        exec_summary = exec_summary["executive_summary"]
+                    elif list(exec_summary.keys()):
+                        # Just get the first value if we can't find a specific key
+                        exec_summary = list(exec_summary.values())[0]
+                
+                # Clean up text if it has quotes around it (common in JSON strings)
+                if isinstance(exec_summary, str) and exec_summary.startswith('"') and exec_summary.endswith('"'):
+                    exec_summary = exec_summary[1:-1]
+                
+                # Handle the specific format shown in the screenshot
+                if isinstance(exec_summary, str) and exec_summary.strip().startswith("```") or "json {" in exec_summary:
+                    # Try to extract just the actual summary text
+                    pattern = r'```.*?"executive_summary":\s*"(.*?)"'
+                    match = re.search(pattern, exec_summary, re.DOTALL)
+                    if match:
+                        exec_summary = match.group(1)
+                    else:
+                        # Try another pattern for triple backtick JSON
+                        match = re.search(r'```.*?\{(.*?)\}.*?```', exec_summary, re.DOTALL)
+                        if match:
+                            # We have JSON content, try to extract the exec summary
+                            json_content = "{" + match.group(1) + "}"
+                            try:
+                                json_obj = json.loads(json_content)
+                                if "executive_summary" in json_obj:
+                                    exec_summary = json_obj["executive_summary"]
+                            except:
+                                pass
+                
+                # Final cleanup for any lingering backticks or formatting
+                if isinstance(exec_summary, str):
+                    # Remove backticks
+                    exec_summary = exec_summary.replace("`", "")
+                    # Remove "json {" fragments
+                    exec_summary = re.sub(r'json\s*\{', '', exec_summary)
+                    # Clean up any messy JSON fragments that didn't parse properly
+                    exec_summary = re.sub(r'"executive_summary"\s*:', '', exec_summary)
+                    exec_summary = re.sub(r'\}\s*$', '', exec_summary)
+                    exec_summary = exec_summary.strip('"\'')
+                    # Clean up any triple quotes
+                    exec_summary = exec_summary.replace('"""', '').replace("'''", "")
+                
                 # Display executive summary
                 st.subheader("Executive Summary")
                 st.markdown(f"""
@@ -266,12 +439,107 @@ def display_result(result, result_type):
                     border: 1px solid rgba(128, 128, 128, 0.2);
                     box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
                 '>
-                    {result['executive']}
+                    {exec_summary}
                 </div>
                 """, unsafe_allow_html=True)
                 
                 # Add some space
                 st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Ensure detailed summary is a string, not a JSON object
+                detailed_summary = None
+                
+                # Try different possible paths to the detailed summary
+                if "detailed" in result:
+                    detailed_summary = result['detailed']
+                elif "summary" in result and isinstance(result["summary"], dict):
+                    summary_content = result["summary"]
+                    if "detailed_summary" in summary_content:
+                        detailed_summary = summary_content["detailed_summary"]
+                    elif "Detailed Summary" in summary_content:
+                        detailed_summary = summary_content["Detailed Summary"]
+                elif "detailed_summary" in result:
+                    detailed_summary = result["detailed_summary"]
+                
+                # Default if not found
+                if detailed_summary is None:
+                    detailed_summary = "No detailed summary available."
+                
+                # Process detailed summary if it's a string that contains JSON-like content
+                if isinstance(detailed_summary, str):
+                    import re
+                    
+                    # Check for ```json pattern in the string
+                    json_block_match = re.search(r'```(?:json)?\s*(.*?)\s*```', detailed_summary, re.DOTALL)
+                    if json_block_match:
+                        try:
+                            json_str = json_block_match.group(1)
+                            json_obj = json.loads(json_str)
+                            if isinstance(json_obj, dict) and "detailed_summary" in json_obj:
+                                detailed_summary = json_obj["detailed_summary"]
+                            elif isinstance(json_obj, dict) and "detailed_summary" not in json_obj:
+                                # If there's no specific detailed_summary field, look for fields that might contain it
+                                for key in json_obj:
+                                    if "detail" in key.lower() or "summary" in key.lower():
+                                        detailed_summary = json_obj[key]
+                                        break
+                        except:
+                            pass  # Keep original if not valid JSON
+                    
+                    # Check for triple backticks pattern as shown in screenshot
+                    backtick_match = re.search(r'\`\`\`\s*json\s*(\{.*\})', detailed_summary, re.DOTALL)
+                    if backtick_match:
+                        try:
+                            json_str = backtick_match.group(1)
+                            json_obj = json.loads(json_str)
+                            if isinstance(json_obj, dict) and "detailed_summary" in json_obj:
+                                detailed_summary = json_obj["detailed_summary"]
+                        except:
+                            pass
+                            
+                    # Check for the specific pattern in the screenshot with ```json { "detailed_summary": "..." }
+                    special_pattern_match = re.search(r'```\s*json\s*{\s*"detailed_summary"\s*:\s*"([^"]+)"', detailed_summary, re.DOTALL)
+                    if special_pattern_match:
+                        detailed_summary = special_pattern_match.group(1)
+                    
+                    # Look for patterns like "json { "detailed_summary": "content" }"
+                    json_obj_match = re.search(r'json\s*{\s*"detailed_summary"\s*:\s*"([^"]+)"', detailed_summary, re.DOTALL)
+                    if json_obj_match:
+                        detailed_summary = json_obj_match.group(1)
+                        
+                    # If it's just a JSON object without markers
+                    if detailed_summary.strip().startswith('{'):
+                        try:
+                            json_obj = json.loads(detailed_summary)
+                            if isinstance(json_obj, dict) and "detailed_summary" in json_obj:
+                                detailed_summary = json_obj["detailed_summary"]
+                        except:
+                            pass  # Keep original if not valid JSON
+                
+                # Handle complex objects
+                if isinstance(detailed_summary, dict):
+                    if "detailed_summary" in detailed_summary:
+                        detailed_summary = detailed_summary["detailed_summary"]
+                    else:
+                        detailed_summary = json.dumps(detailed_summary, indent=2)
+                
+                # Clean up text if it has quotes around it (common in JSON strings)
+                if isinstance(detailed_summary, str) and detailed_summary.startswith('"') and detailed_summary.endswith('"'):
+                    detailed_summary = detailed_summary[1:-1]
+                    
+                # Handle the specific case in the screenshot
+                if isinstance(detailed_summary, str) and (
+                    "```json" in detailed_summary or 
+                    '"""json' in detailed_summary or 
+                    "'''json" in detailed_summary
+                ):
+                    # Clean up markdown code blocks and any JSON formatting
+                    detailed_summary = re.sub(r'```json|```|"""json|"""|\'\'\' json|\'\'\'', '', detailed_summary).strip()
+                
+                # Remove leading backticks/quotes if present
+                if isinstance(detailed_summary, str):
+                    detailed_summary = re.sub(r'^[`"\']+ *', '', detailed_summary)
+                    detailed_summary = re.sub(r' *[`"\']+ *$', '', detailed_summary)
                 
                 # Display detailed summary
                 st.subheader("Detailed Summary")
@@ -284,7 +552,7 @@ def display_result(result, result_type):
                     border: 1px solid rgba(128, 128, 128, 0.2);
                     box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
                 '>
-                    {result['detailed']}
+                    {detailed_summary}
                 </div>
                 """, unsafe_allow_html=True)
                 
@@ -292,59 +560,289 @@ def display_result(result, result_type):
                 st.markdown("<br>", unsafe_allow_html=True)
                 
                 # Create two columns for topics and conclusions
-                if ("topics" in result and result["topics"]) or ("conclusions" in result and result["conclusions"]):
-                    col1, col2 = st.columns(2)
-                    
-                    # Display Key Topics/Themes if available
-                    if "topics" in result and result["topics"]:
-                        with col1:
-                            st.subheader("Key Topics/Themes")
-                            topics_html = "<div style='background-color: rgba(0, 0, 0, 0.05); padding: 15px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);'>"
-                            for topic in result["topics"]:
-                                topics_html += f"<p style='margin-bottom: 8px; color: inherit;'>🔹 {topic}</p>"
-                            topics_html += "</div>"
-                            st.markdown(topics_html, unsafe_allow_html=True)
-                    
-                    # Display Main Conclusions/Takeaways if available
-                    if "conclusions" in result and result["conclusions"]:
-                        with col2:
-                            st.subheader("Main Conclusions/Takeaways")
-                            conclusions_html = "<div style='background-color: rgba(0, 0, 0, 0.05); padding: 15px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);'>"
-                            for i, conclusion in enumerate(result["conclusions"], 1):
-                                conclusions_html += f"<p style='margin-bottom: 8px; color: inherit;'><strong>{i}.</strong> {conclusion}</p>"
-                            conclusions_html += "</div>"
-                            st.markdown(conclusions_html, unsafe_allow_html=True)
+                topics = None
+                conclusions = None
                 
-            elif "summary" in result:
-                # Legacy format with just one summary
-                st.markdown(f"""
+                # Try different paths for topics and conclusions
+                if "topics" in result:
+                    topics = result["topics"]
+                elif "summary" in result and isinstance(result["summary"], dict):
+                    summary_content = result["summary"]
+                    if "key_topics" in summary_content:
+                        topics = summary_content["key_topics"]
+                    elif "Key Topics/Themes" in summary_content:
+                        topics = summary_content["Key Topics/Themes"]
+                    # Try more potential field names for topics
+                    elif any(key in summary_content for key in ["topics", "Topics", "key_themes", "Key Themes", "themes", "Themes"]):
+                        for field_name in ["topics", "Topics", "key_themes", "Key Themes", "themes", "Themes"]:
+                            if field_name in summary_content:
+                                topics = summary_content[field_name]
+                                break
+                
+                # Also try root-level alternative names for topics
+                if topics is None:
+                    for field_name in ["key_topics", "Key Topics/Themes", "topics", "Topics", "key_themes", 
+                                      "Key Themes", "themes", "Themes", "main_topics", "Main Topics"]:
+                        if field_name in result:
+                            topics = result[field_name]
+                            break
+                
+                # Process topics if they're in string format
+                if isinstance(topics, str):
+                    # If topics is a string, try to parse it as a list
+                    if topics.startswith('[') and topics.endswith(']'):
+                        try:
+                            # Try parsing as JSON array
+                            topics = json.loads(topics)
+                        except:
+                            # If parsing fails, split by common delimiters
+                            topics = [t.strip() for t in re.split(r'[,;•\n-]', topics) if t.strip()]
+                    else:
+                        # Split by common list markers
+                        topics = [t.strip() for t in re.split(r'[,;•\n-]', topics) if t.strip()]
+                
+                # Handle other string formats that might contain JSON
+                if isinstance(topics, str) and ('```' in topics or '{' in topics or '[' in topics):
+                    # Try to extract structured content from markdown blocks
+                    try:
+                        # Look for code blocks
+                        json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', topics, re.DOTALL)
+                        if json_match:
+                            json_content = json_match.group(1)
+                            try:
+                                parsed = json.loads(json_content)
+                                if isinstance(parsed, list):
+                                    topics = parsed
+                                elif isinstance(parsed, dict) and "topics" in parsed:
+                                    topics = parsed["topics"]
+                            except:
+                                pass
+                        
+                        # If no code blocks, try to parse as JSON directly
+                        elif topics.strip().startswith('{') or topics.strip().startswith('['):
+                            try:
+                                parsed = json.loads(topics)
+                                if isinstance(parsed, list):
+                                    topics = parsed
+                                elif isinstance(parsed, dict) and "topics" in parsed:
+                                    topics = parsed["topics"]
+                            except:
+                                pass
+                    except:
+                        pass
+                
+                # If topics is still None or not a list, create an empty list
+                if topics is None:
+                    topics = []
+                
+                # Make sure topics is a list
+                if not isinstance(topics, list):
+                    if isinstance(topics, dict):
+                        # Convert dict to list of strings
+                        topics = [f"{k}: {v}" for k, v in topics.items()]
+                    else:
+                        topics = [str(topics)]
+                
+                # Try different paths for conclusions
+                if "conclusions" in result:
+                    conclusions = result["conclusions"]
+                elif "summary" in result and isinstance(result["summary"], dict):
+                    summary_content = result["summary"]
+                    if "takeaways" in summary_content:
+                        conclusions = summary_content["takeaways"]
+                    elif "Main Conclusions/Takeaways" in summary_content:
+                        conclusions = summary_content["Main Conclusions/Takeaways"]
+                    # Try more potential field names for conclusions
+                    elif any(key in summary_content for key in ["conclusions", "Conclusions", "key_takeaways", "Key Takeaways"]):
+                        for field_name in ["conclusions", "Conclusions", "key_takeaways", "Key Takeaways"]:
+                            if field_name in summary_content:
+                                conclusions = summary_content[field_name]
+                                break
+                
+                # Also try root-level alternative names for conclusions
+                if conclusions is None:
+                    for field_name in ["takeaways", "Main Conclusions/Takeaways", "conclusions", "Conclusions",
+                                     "main_conclusions", "Main Conclusions", "key_takeaways", "Key Takeaways"]:
+                        if field_name in result:
+                            conclusions = result[field_name]
+                            break
+                
+                # Process conclusions if they're in string format
+                if isinstance(conclusions, str):
+                    # If conclusions is a string, try to parse it as a list
+                    if conclusions.startswith('[') and conclusions.endswith(']'):
+                        try:
+                            # Try parsing as JSON array
+                            conclusions = json.loads(conclusions)
+                        except:
+                            # If parsing fails, split by common delimiters
+                            conclusions = [c.strip() for c in re.split(r'[,;•\n-]', conclusions) if c.strip()]
+                    else:
+                        # Split by common list markers
+                        conclusions = [c.strip() for c in re.split(r'[,;•\n-]', conclusions) if c.strip()]
+                
+                # Handle other string formats that might contain JSON
+                if isinstance(conclusions, str) and ('```' in conclusions or '{' in conclusions or '[' in conclusions):
+                    # Try to extract structured content from markdown blocks
+                    try:
+                        # Look for code blocks
+                        json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', conclusions, re.DOTALL)
+                        if json_match:
+                            json_content = json_match.group(1)
+                            try:
+                                parsed = json.loads(json_content)
+                                if isinstance(parsed, list):
+                                    conclusions = parsed
+                                elif isinstance(parsed, dict) and "conclusions" in parsed:
+                                    conclusions = parsed["conclusions"]
+                                elif isinstance(parsed, dict) and "takeaways" in parsed:
+                                    conclusions = parsed["takeaways"]
+                            except:
+                                pass
+                        
+                        # If no code blocks, try to parse as JSON directly
+                        elif conclusions.strip().startswith('{') or conclusions.strip().startswith('['):
+                            try:
+                                parsed = json.loads(conclusions)
+                                if isinstance(parsed, list):
+                                    conclusions = parsed
+                                elif isinstance(parsed, dict) and "conclusions" in parsed:
+                                    conclusions = parsed["conclusions"]
+                                elif isinstance(parsed, dict) and "takeaways" in parsed:
+                                    conclusions = parsed["takeaways"]
+                            except:
+                                pass
+                    except:
+                        pass
+                
+                # If conclusions is still None or not a list, create an empty list
+                if conclusions is None:
+                    conclusions = []
+                
+                # Make sure conclusions is a list
+                if not isinstance(conclusions, list):
+                    if isinstance(conclusions, dict):
+                        # Convert dict to list of strings
+                        conclusions = [f"{k}: {v}" for k, v in conclusions.items()]
+                    else:
+                        conclusions = [str(conclusions)]
+        
+        # Display topics and conclusions in two columns
+        if topics or conclusions:
+            col1, col2 = st.columns(2)
+            
+            # Debug output - comment out in production
+            print(f"DEBUG in display_result: topics={topics}, type={type(topics)}")
+            print(f"DEBUG in display_result: conclusions={conclusions}, type={type(conclusions)}")
+            
+            # Always display the Topics section, even if empty
+            with col1:
+                st.subheader("Key Topics/Themes")
+                topics_html = "<div style='background-color: rgba(0, 0, 0, 0.05); padding: 15px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);'>"
+                
+                # Handle topics that might be strings, dicts, or lists
+                if topics is None:
+                    topics = []
+                
+                if not isinstance(topics, list):
+                    if isinstance(topics, dict):
+                        topics = [f"{k}: {v}" for k, v in topics.items()]
+                    else:
+                        # Try to parse as JSON if it's a string
+                        if isinstance(topics, str) and (topics.strip().startswith('[') or topics.strip().startswith('{')):
+                            try:
+                                parsed = json.loads(topics)
+                                if isinstance(parsed, list):
+                                    topics = parsed
+                                elif isinstance(parsed, dict):
+                                    topics = [f"{k}: {v}" for k, v in parsed.items()]
+                            except:
+                                topics = [str(topics)]
+                        else:
+                            topics = [str(topics)]
+                
+                if len(topics) > 0:
+                    for topic in topics:
+                        if isinstance(topic, dict):
+                            for k, v in topic.items():
+                                topics_html += f"<p style='margin-bottom: 8px; color: inherit;'>🔹 {k}: {v}</p>"
+                        else:
+                            topics_html += f"<p style='margin-bottom: 8px; color: inherit;'>🔹 {topic}</p>"
+                else:
+                    topics_html += "<p style='margin-bottom: 8px; color: inherit;'>No topics available</p>"
+                
+                topics_html += "</div>"
+                st.markdown(topics_html, unsafe_allow_html=True)
+            
+            # Always display the Conclusions section, even if empty
+            with col2:
+                st.subheader("Main Conclusions/Takeaways")
+                conclusions_html = "<div style='background-color: rgba(0, 0, 0, 0.05); padding: 15px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);'>"
+                
+                # Handle conclusions that might be strings, dicts, or lists
+                if conclusions is None:
+                    conclusions = []
+                
+                if not isinstance(conclusions, list):
+                    if isinstance(conclusions, dict):
+                        conclusions = [f"{k}: {v}" for k, v in conclusions.items()]
+                    else:
+                        # Try to parse as JSON if it's a string
+                        if isinstance(conclusions, str) and (conclusions.strip().startswith('[') or conclusions.strip().startswith('{')):
+                            try:
+                                parsed = json.loads(conclusions)
+                                if isinstance(parsed, list):
+                                    conclusions = parsed
+                                elif isinstance(parsed, dict):
+                                    conclusions = [f"{k}: {v}" for k, v in parsed.items()]
+                            except:
+                                conclusions = [str(conclusions)]
+                        else:
+                            conclusions = [str(conclusions)]
+                
+                if len(conclusions) > 0:
+                    for i, conclusion in enumerate(conclusions, 1):
+                        if isinstance(conclusion, dict):
+                            for k, v in conclusion.items():
+                                conclusions_html += f"<p style='margin-bottom: 8px; color: inherit;'><strong>{i}.</strong> {k}: {v}</p>"
+                        else:
+                            conclusions_html += f"<p style='margin-bottom: 8px; color: inherit;'><strong>{i}.</strong> {conclusion}</p>"
+                else:
+                    conclusions_html += "<p style='margin-bottom: 8px; color: inherit;'>No conclusions available</p>"
+                
+                conclusions_html += "</div>"
+                st.markdown(conclusions_html, unsafe_allow_html=True)
+        else:
+            # If no topics or conclusions were found, still display empty sections
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Key Topics/Themes")
+                st.markdown("""
                 <div style='
                     background-color: rgba(0, 0, 0, 0.05); 
-                    color: inherit; 
                     padding: 15px; 
                     border-radius: 5px; 
                     border: 1px solid rgba(128, 128, 128, 0.2);
                     box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
                 '>
-                    {result['summary']}
+                    <p style='margin-bottom: 8px; color: inherit;'>No topics available</p>
                 </div>
                 """, unsafe_allow_html=True)
-            else:
-                st.write("Unknown summary format")
-        else:
-            # Handle legacy string format
-            st.markdown(f"""
-            <div style='
-                background-color: rgba(0, 0, 0, 0.05); 
-                color: inherit; 
-                padding: 15px; 
-                border-radius: 5px; 
-                border: 1px solid rgba(128, 128, 128, 0.2);
-                box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
-            '>
-                {result}
-            </div>
-            """, unsafe_allow_html=True)
+            
+            with col2:
+                st.subheader("Main Conclusions/Takeaways")
+                st.markdown("""
+                <div style='
+                    background-color: rgba(0, 0, 0, 0.05); 
+                    padding: 15px; 
+                    border-radius: 5px; 
+                    border: 1px solid rgba(128, 128, 128, 0.2);
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+                '>
+                    <p style='margin-bottom: 8px; color: inherit;'>No conclusions available</p>
+                </div>
+                """, unsafe_allow_html=True)
     elif result_type == "proofreading":
         st.header("Proofreading Results")
         
@@ -429,6 +927,9 @@ def display_ingestion_status():
     """
     Display the status of ongoing and completed ingestion processes.
     """
+    # Import check_ingestion_status
+    from utils.ingestion_utils import check_ingestion_status
+    
     # Filter session state keys to find ingestion status entries
     ingestion_keys = [k for k in st.session_state.keys() if k.startswith("ingestion_status_")]
     
@@ -437,27 +938,147 @@ def display_ingestion_status():
         
     st.subheader("Document Ingestion Status")
     
+    # Add a refresh button for all statuses
+    if st.button("Refresh All Statuses"):
+        st.success("Refreshing all ingestion statuses...")
+    
     for key in ingestion_keys:
         status_data = st.session_state[key]
         doc_id = status_data.get("document_id", "Unknown")
         blob_name = status_data.get("blob_name", "Unknown")
         timestamp = status_data.get("timestamp", "Unknown")
         status = status_data.get("status", "Unknown")
+        error_message = status_data.get("error", None)
+        orchestration_data = status_data.get("orchestration_data", {})
         
         # Create a unique key for each status
         status_key = f"status_{doc_id}"
         
-        with st.expander(f"Document: {blob_name} (ID: {doc_id})"):
-            st.write(f"**Status:** {status}")
+        # Choose color based on status
+        if status == "started" or status == "running":
+            status_color = "blue"
+            status_icon = "🔄"
+        elif status == "completed":
+            status_color = "green" 
+            status_icon = "✅"
+        elif status == "failed":
+            status_color = "red"
+            status_icon = "❌"
+        else:
+            status_color = "orange"
+            status_icon = "❓"
+        
+        with st.expander(f"{status_icon} Document: {blob_name} (ID: {doc_id})"):
+            # Check for status query URI in the orchestration data
+            status_query_uri = orchestration_data.get("statusQueryGetUri", None)
+            
+            # Show current status from session state
+            st.markdown(f"**Status:** <span style='color:{status_color};'>{status}</span>", unsafe_allow_html=True)
             st.write(f"**Started:** {timestamp}")
             
+            # If we have a status URI, add a refresh button and check real-time status
+            if status_query_uri:
+                if st.button("Check Current Status", key=f"check_status_{doc_id}"):
+                    with st.spinner("Checking ingestion status..."):
+                        # Call the function to check the current status
+                        current_status = check_ingestion_status(status_query_uri)
+                        
+                        if current_status.get("success", False):
+                            # Update the display with the current status
+                            runtime_status = current_status.get("runtime_status", "Unknown")
+                            custom_status = current_status.get("custom_status", "")
+                            
+                            # Show runtime status with appropriate color
+                            if runtime_status == "Completed":
+                                st.markdown(f"**Current Status:** <span style='color:green;'>{runtime_status}</span>", unsafe_allow_html=True)
+                                # Update session state
+                                st.session_state[key]["status"] = "completed"
+                            elif runtime_status == "Failed":
+                                st.markdown(f"**Current Status:** <span style='color:red;'>{runtime_status}</span>", unsafe_allow_html=True)
+                                # Update session state
+                                st.session_state[key]["status"] = "failed"
+                                if "output" in current_status:
+                                    st.session_state[key]["error"] = current_status["output"]
+                            elif runtime_status == "Running":
+                                st.markdown(f"**Current Status:** <span style='color:blue;'>{runtime_status}</span>", unsafe_allow_html=True)
+                                # Update session state
+                                st.session_state[key]["status"] = "running"
+                            else:
+                                st.markdown(f"**Current Status:** <span style='color:orange;'>{runtime_status}</span>", unsafe_allow_html=True)
+                            
+                            # Show custom status if available
+                            if custom_status:
+                                st.markdown(f"**Progress:** {custom_status}")
+                            
+                            # Show last updated time
+                            if "last_updated_time" in current_status:
+                                st.write(f"**Last Updated:** {current_status['last_updated_time']}")
+                            
+                            # Show output for completed or failed processes
+                            if runtime_status in ["Completed", "Failed"] and "output" in current_status:
+                                st.markdown("**Result:**")
+                                st.code(current_status["output"], language="json")
+                        else:
+                            st.error(f"Failed to check status: {current_status.get('error', 'Unknown error')}")
+                
+                # Add information about the orchestration
+                st.markdown("**Orchestration Details:**")
+                st.json(orchestration_data)
+            
+            # Display error message if there is one
+            if error_message:
+                st.error(f"**Error:** {error_message}")
+                
+                # Add helpful suggestions based on common errors
+                if error_message and "Connection error" in error_message:
+                    st.info("""
+**Troubleshooting suggestions:**
+1. Make sure the Azure Function app is running locally or deployed
+2. Check the INGESTION_FUNCTION_URL in your .env file
+3. If you're running functions locally, try `func start` in the terminal
+                    """)
+                    
+            # Add option to terminate the orchestration if it's running
+            if status in ["started", "running"] and "terminatePostUri" in orchestration_data:
+                terminate_uri = orchestration_data["terminatePostUri"].replace("{text}", "Manually terminated by user")
+                if st.button("Cancel Ingestion Process", key=f"terminate_{key}_{doc_id}"):
+                    with st.spinner("Cancelling ingestion process..."):
+                        try:
+                            response = requests.post(terminate_uri)
+                            if response.status_code in [200, 202]:
+                                st.success("Ingestion process cancelled successfully")
+                                # Update session state
+                                st.session_state[key]["status"] = "cancelled"
+                            else:
+                                st.error(f"Failed to cancel ingestion: {response.status_code} - {response.text}")
+                        except Exception as e:
+                            st.error(f"Error cancelling ingestion: {str(e)}")
+                
+                # Add helpful suggestions based on error messages
+                if error_message and "Connection error" in error_message:
+                    st.info("**Troubleshooting suggestions:**\n"
+                           "1. Make sure the Azure Function app is running locally or deployed\n"
+                           "2. Check the INGESTION_FUNCTION_URL in your .env file\n"
+                           "3. If you're running functions locally, try `func start` in the terminal")
+                elif error_message and "timed out" in error_message:
+                    st.info("**Troubleshooting suggestions:**\n"
+                           "1. The function might be taking longer than expected\n"
+                           "2. Check function logs for errors or long-running operations\n"
+                           "3. Try increasing the timeout in the ingestion_utils.py file")
+            
+            # Add details expander for raw response if available
+            if status_data.get("raw_response"):
+                with st.expander("Response Details"):
+                    st.code(status_data.get("raw_response"), language="text")
+            
             # Add refresh button to check current status
-            if st.button("Refresh Status", key=f"refresh_{doc_id}"):
-                st.info("Refreshing status... (In a production app, this would check the actual status)")
-                # In a real implementation, you would make an API call to check the status
-                # For now, we'll just simulate the check
+            if st.button("Refresh Status", key=f"refresh_{key}_{doc_id}"):
+                # In a real implementation, this would check the actual status with the Azure Function
+                st.info("Refreshing status... (This would check the status with the Azure Function)")
+                # For now, we'll just update the timestamp to show the refresh happened
+                st.session_state[key]["last_checked"] = datetime.now().isoformat()
                 
             # Add option to clear this status from the display
-            if st.button("Clear", key=f"clear_{doc_id}"):
+            if st.button("Clear", key=f"clear_{key}_{doc_id}"):
                 del st.session_state[key]
                 st.rerun()

@@ -6,10 +6,25 @@
         "isEnabled": true,
         "excludedTypes": "Request"
       }
+    },
+    "logLevel": {
+      "default": "Information",
+      "Function": "Information",
+      "Host.Triggers.DurableTask": "Warning"
     }
   },
   "extensionBundle": {
     "id": "Microsoft.Azure.Functions.ExtensionBundle",
     "version": "[3.*, 4.0.0)"
-  }
+  },    "extensions": {
+      "durableTask": {
+        "hubName": "IngestionTaskHub",
+        "storageProvider": {
+          "connectionStringName": "AzureWebJobsStorage"
+        },
+        "maxConcurrentActivityFunctions": 100,
+        "maxConcurrentOrchestratorFunctions": 50
+      }
+    },
+  "functionTimeout": "00:30:00"
 }

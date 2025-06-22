@@ -6,8 +6,6 @@ from azure.search.documents.indexes.models import (
     SearchIndex,
     SimpleField,
     SearchableField,
-    SearchField,
-    VectorSearch,
     SearchField
 )
 import os
@@ -19,7 +17,7 @@ import logging, sys
 logging.basicConfig(stream=sys.stdout, level="DEBUG")
 logging.getLogger("azure").setLevel("DEBUG")
 
-API_VER = "2024-03-01-preview"
+API_VER = "2023-11-01"
     
 def get_current_index(index_name_or_stem):
     """
@@ -253,39 +251,44 @@ def create_vector_index(stem_name, user_fields, omit_timestamp=False, dimensions
         elif field_type == 'bool':
             fields.append(SimpleField(name=field, type=SearchFieldDataType.Boolean, searchable=False, filterable=True))
 
-    if dimensions!= None:
+    if dimensions != None:
         vector_dimensions = dimensions
     else:
-        vector_dimensions = os.environ.get('AOAI_EMBEDDINGS_DIMENSIONS')
+        vector_dimensions = os.environ.get('AOAI_EMBEDDINGS_DIMENSIONS', 1536)
+        vector_dimensions = int(vector_dimensions)
 
-    # Create vector search configuration
-    # vector_search = VectorSearch(
-    #     algorithm_configurations=[
-    #         HnswVectorSearchAlgorithmConfiguration(
-    #             name=vector_algorithm_name,  # Use the consistent name
-    #             kind="hnsw",
-    #             parameters={
-    #                 "m": 4,
-    #                 "efConstruction": 400,
-    #                 "efSearch": 500,
-    #                 "metric": "cosine"
-    #             }
-    #         )
-    #     ],
-    #     profiles=[
-    #         {
-    #             "name": vector_profile_name,
-    #             "algorithm": vector_algorithm_name
-    #         }
-    #     ]
-    # )
+    # Define the vector algorithm name and profile name
+    vector_algorithm_name = "vector-config"
+    vector_profile_name = "vector-profile"
+
+    # Create vector search configuration directly as a dictionary structure
+    vector_search = {
+        "algorithms": [
+            {
+                "name": vector_algorithm_name,
+                "kind": "hnsw",
+                "hnsw": {
+                    "m": 4,
+                    "efConstruction": 400,
+                    "efSearch": 500,
+                    "metric": "cosine"
+                }
+            }
+        ],
+        "profiles": [
+            {
+                "name": vector_profile_name,
+                "algorithm": vector_algorithm_name
+            }
+        ]
+    }
 
     # Add vector embeddings field with correct Collection type and dimensions
     vector_field = SearchField(
         name="embeddings",
         type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-        vector_search_dimensions=dimensions,
-        vector_search_profile_name=vector_profile_name, # Use the same name here
+        vector_search_dimensions=vector_dimensions,
+        vector_search_profile_name=vector_profile_name,
         searchable=True,
         filterable=False,
         sortable=False,
@@ -296,12 +299,19 @@ def create_vector_index(stem_name, user_fields, omit_timestamp=False, dimensions
     # Create the search index with the specified fields
     index = SearchIndex(
         name=index_name,
-        fields=fields,
-        vector_search=vector_search
+        fields=fields
     )
-    result = client.create_or_update_index(index)
-
-    return result.name
+    
+    # Set the vector search configuration directly as a property
+    setattr(index, "vector_search", vector_search)
+    
+    try:
+        result = client.create_or_update_index(index)
+        logging.info(f"Successfully created index {index_name} with API version {API_VER}")
+        return result.name
+    except Exception as e:
+        logging.error(f"Error creating index with API version {API_VER}: {e}")
+        raise
 
 
 def create_update_index_alias(alias_name, target_index):
