@@ -19,7 +19,7 @@ from azure.identity import DefaultAzureCredential
 from pypdf import PdfReader, PdfWriter
 import pikepdf
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, timedelta
 import filetype
 import fitz as pymupdf
 from PIL import Image
@@ -3079,14 +3079,24 @@ def run_summarization_pipeline(context):
     try:
         context.set_custom_status('Starting Summarization Pipeline')
         
-        # Generate page-level summaries
+        # Generate page-level summaries in parallel batches for better performance
         summary_tasks = []
-        for pdf in pdf_pages:
+        for i, pdf in enumerate(pdf_pages):
+            # Add a small staggered delay between task submissions to reduce contention
+            if i > 0 and i % 5 == 0:  # Add a small delay every 5 tasks
+                from datetime import timedelta
+                yield context.create_timer(context.current_utc_datetime + timedelta(seconds=1))
+                
             summary_tasks.append(context.call_activity("generate_document_summary_activity", json.dumps({
                 'doc_intel_formatted_results_container': doc_intel_formatted_results_container,
                 'summary_container': summaries_container,
-                'file': pdf['child'].replace('.pdf', '.json')
+                'file': pdf['child'].replace('.pdf', '.json'),
+                'task_id': i  # Add a task ID for tracking purposes
             })))
+        
+        # Process summary tasks in parallel with task_all
+        # Each individual summary task also uses internal parallelization
+        context.set_custom_status('Generating page summaries in parallel')
         summary_files = yield context.task_all(summary_tasks)
 
         # Group pages by parent document for document-level summaries

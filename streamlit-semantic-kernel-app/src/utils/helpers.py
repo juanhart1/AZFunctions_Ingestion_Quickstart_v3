@@ -1,4 +1,5 @@
 import streamlit as st
+import json
 import os
 import json
 import requests
@@ -285,6 +286,11 @@ def display_result(result, result_type):
                 
                 st.markdown("---")
                 
+                # Ensure executive summary is a string, not a JSON object
+                exec_summary = result['executive']
+                if isinstance(exec_summary, dict) or isinstance(exec_summary, list):
+                    exec_summary = json.dumps(exec_summary, indent=2)
+                
                 # Display executive summary
                 st.subheader("Executive Summary")
                 st.markdown(f"""
@@ -296,12 +302,17 @@ def display_result(result, result_type):
                     border: 1px solid rgba(128, 128, 128, 0.2);
                     box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
                 '>
-                    {result['executive']}
+                    {exec_summary}
                 </div>
                 """, unsafe_allow_html=True)
                 
                 # Add some space
                 st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Ensure detailed summary is a string, not a JSON object
+                detailed_summary = result['detailed']
+                if isinstance(detailed_summary, dict) or isinstance(detailed_summary, list):
+                    detailed_summary = json.dumps(detailed_summary, indent=2)
                 
                 # Display detailed summary
                 st.subheader("Detailed Summary")
@@ -314,7 +325,7 @@ def display_result(result, result_type):
                     border: 1px solid rgba(128, 128, 128, 0.2);
                     box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
                 '>
-                    {result['detailed']}
+                    {detailed_summary}
                 </div>
                 """, unsafe_allow_html=True)
                 
@@ -330,8 +341,21 @@ def display_result(result, result_type):
                         with col1:
                             st.subheader("Key Topics/Themes")
                             topics_html = "<div style='background-color: rgba(0, 0, 0, 0.05); padding: 15px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);'>"
-                            for topic in result["topics"]:
-                                topics_html += f"<p style='margin-bottom: 8px; color: inherit;'>🔹 {topic}</p>"
+                            
+                            # Handle topics that might be strings, dicts, or lists
+                            topics = result["topics"]
+                            if not isinstance(topics, list):
+                                if isinstance(topics, dict):
+                                    topics = [f"{k}: {v}" for k, v in topics.items()]
+                                else:
+                                    topics = [str(topics)]
+                                
+                            for topic in topics:
+                                if isinstance(topic, dict):
+                                    for k, v in topic.items():
+                                        topics_html += f"<p style='margin-bottom: 8px; color: inherit;'>🔹 {k}: {v}</p>"
+                                else:
+                                    topics_html += f"<p style='margin-bottom: 8px; color: inherit;'>🔹 {topic}</p>"
                             topics_html += "</div>"
                             st.markdown(topics_html, unsafe_allow_html=True)
                     
@@ -340,27 +364,48 @@ def display_result(result, result_type):
                         with col2:
                             st.subheader("Main Conclusions/Takeaways")
                             conclusions_html = "<div style='background-color: rgba(0, 0, 0, 0.05); padding: 15px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.2); box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);'>"
-                            for i, conclusion in enumerate(result["conclusions"], 1):
-                                conclusions_html += f"<p style='margin-bottom: 8px; color: inherit;'><strong>{i}.</strong> {conclusion}</p>"
+                            
+                            # Handle conclusions that might be strings, dicts, or lists
+                            conclusions = result["conclusions"]
+                            if not isinstance(conclusions, list):
+                                if isinstance(conclusions, dict):
+                                    conclusions = [f"{k}: {v}" for k, v in conclusions.items()]
+                                else:
+                                    conclusions = [str(conclusions)]
+                            
+                            for i, conclusion in enumerate(conclusions, 1):
+                                if isinstance(conclusion, dict):
+                                    for k, v in conclusion.items():
+                                        conclusions_html += f"<p style='margin-bottom: 8px; color: inherit;'><strong>{i}.</strong> {k}: {v}</p>"
+                                else:
+                                    conclusions_html += f"<p style='margin-bottom: 8px; color: inherit;'><strong>{i}.</strong> {conclusion}</p>"
                             conclusions_html += "</div>"
                             st.markdown(conclusions_html, unsafe_allow_html=True)
                 
             elif "summary" in result:
-                # Legacy format with just one summary
-                st.markdown(f"""
-                <div style='
-                    background-color: rgba(0, 0, 0, 0.05); 
-                    color: inherit; 
-                    padding: 15px; 
-                    border-radius: 5px; 
-                    border: 1px solid rgba(128, 128, 128, 0.2);
-                    box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
-                '>
-                    {result['summary']}
-                </div>
-                """, unsafe_allow_html=True)
+                # Format and display summary if it's a raw JSON string or object
+                summary_content = result['summary']
+                if isinstance(summary_content, dict) or isinstance(summary_content, list):
+                    formatted_summary = json.dumps(summary_content, indent=2)
+                    st.code(formatted_summary, language='json')
+                else:
+                    # Legacy format with just one summary
+                    st.markdown(f"""
+                    <div style='
+                        background-color: rgba(0, 0, 0, 0.05); 
+                        color: inherit; 
+                        padding: 15px; 
+                        border-radius: 5px; 
+                        border: 1px solid rgba(128, 128, 128, 0.2);
+                        box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+                    '>
+                        {result['summary']}
+                    </div>
+                    """, unsafe_allow_html=True)
             else:
-                st.write("Unknown summary format")
+                # If we have a structure we don't recognize, display it as formatted JSON
+                st.subheader("Summary Data")
+                st.json(result)
         else:
             # Handle legacy string format
             st.markdown(f"""

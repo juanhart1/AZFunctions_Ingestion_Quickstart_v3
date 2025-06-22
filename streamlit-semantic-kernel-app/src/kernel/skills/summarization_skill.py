@@ -132,20 +132,31 @@ class SummarizationSkill:
                     elif "executive_summary" in summary_section and "detailed_summary" in summary_section:
                         return {
                             "executive": summary_section.get("executive_summary", "No executive summary available."),
-                            "detailed": summary_section.get("detailed_summary", "No detailed summary available.")
+                            "detailed": summary_section.get("detailed_summary", "No detailed summary available."),
+                            "topics": summary_section.get("key_topics", []),
+                            "conclusions": summary_section.get("takeaways", []),
+                            "source_file": summary_data.get("sourcefile", ""),
+                            "generated_date": summary_data.get("generated_date", "")
                         }
                     else:
                         # Return what we have in the summary section
-                        return {"summary": summary_section}
+                        formatted_summary = {
+                            "summary": summary_section
+                        }
+                        return formatted_summary
                 elif "executive_summary" in summary_data and "detailed_summary" in summary_data:
                     # The summary might be at the root level
                     return {
                         "executive": summary_data.get("executive_summary", "No executive summary available."),
-                        "detailed": summary_data.get("detailed_summary", "No detailed summary available.")
+                        "detailed": summary_data.get("detailed_summary", "No detailed summary available."),
+                        "topics": summary_data.get("key_topics", []),
+                        "conclusions": summary_data.get("takeaways", []),
+                        "source_file": summary_data.get("sourcefile", ""),
+                        "generated_date": summary_data.get("generated_date", "")
                     }
                 else:
-                    # If we can't find specific summary fields, return the whole content
-                    return {"summary": f"Summary structure unclear. Raw content: {summary_content[:500]}..."}
+                    # If we can't find specific summary fields, return the whole content as structured data
+                    return {"summary": summary_data}
             except json.JSONDecodeError as json_error:
                 print(f"ERROR: Failed to parse JSON: {str(json_error)}")
                 print(f"ERROR: Content: {summary_content[:500]}...")

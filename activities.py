@@ -11,7 +11,8 @@ from aoai_utilities import generate_hierarchical_summary
 from proofreading_utilities import check_spelling, check_grammar, check_clarity, check_style
 
 # Create a thread pool executor for running blocking functions
-thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+# Increase max_workers to match the Azure Function concurrency settings (up to 100)
+thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=32)
 
 async def run_in_threadpool(func, *args, **kwargs):
     """Run a blocking function in a thread pool to avoid blocking the event loop."""
@@ -52,6 +53,10 @@ async def generate_document_summary(activitypayload: str) -> str:
         doc_intel_formatted_results_container = input_data['doc_intel_formatted_results_container']
         summary_container = input_data['summary_container']
         file_name = input_data['file']
+        task_id = input_data.get('task_id', 0)  # Get task ID if available
+        
+        # Log task start with task ID for tracking parallel execution
+        logging.info(f"[TASK-{task_id}] Starting summary generation for {file_name}")
         
         # Initialize blob service client
         blob_service_client = BlobServiceClient.from_connection_string(os.environ["STORAGE_CONN_STR"])
@@ -81,8 +86,16 @@ async def generate_document_summary(activitypayload: str) -> str:
         else:
             try:
                 # Generate hierarchical summary using 'content' instead of 'text'
-                logging.info(f"Generating summary for {file_name} with content length: {len(source_content['content'])}")
+                logging.info(f"[TASK-{task_id}] Generating summary for {file_name} with content length: {len(source_content['content'])}")
+                
+                # Use direct call instead of a thread pool since we're already running in a thread pool
+                # This avoids nesting thread pools which can lead to thread starvation
+                summary_start_time = datetime.now()
                 summary = generate_hierarchical_summary(source_content['content'])
+                summary_end_time = datetime.now()
+                summary_duration = (summary_end_time - summary_start_time).total_seconds()
+                
+                logging.info(f"[TASK-{task_id}] Summary generation for {file_name} completed in {summary_duration:.2f} seconds")
                 
                 # Validate the summary has all expected fields
                 expected_fields = ["executive_summary", "detailed_summary", "key_topics", "takeaways"]
@@ -97,9 +110,9 @@ async def generate_document_summary(activitypayload: str) -> str:
                         else:  # key_topics and takeaways are lists
                             summary[field] = ["Summary generation was incomplete"]
                 
-                logging.info(f"Successfully generated summary for {file_name}")
+                logging.info(f"[TASK-{task_id}] Successfully generated summary for {file_name}")
             except Exception as e:
-                logging.error(f"Error generating summary for {file_name}: {str(e)}")
+                logging.error(f"[TASK-{task_id}] Error generating summary for {file_name}: {str(e)}")
                 # Return a fallback summary
                 summary = {
                     "executive_summary": "Summary generation encountered an error.",
@@ -124,10 +137,11 @@ async def generate_document_summary(activitypayload: str) -> str:
         summary_blob = summary_container_client.get_blob_client(summary_file_name)
         summary_blob.upload_blob(json.dumps(summary_record), overwrite=True)
         
+        logging.info(f"[TASK-{task_id}] Successfully generated and uploaded summary for {file_name}")
         return summary_file_name
         
     except Exception as e:
-        logging.error(f"Error in generate_document_summary: {str(e)}")
+        logging.error(f"[TASK-{task_id}] Error in generate_document_summary: {str(e)}")
         raise
 
 async def generate_page_proofread(activitypayload: str) -> str:
