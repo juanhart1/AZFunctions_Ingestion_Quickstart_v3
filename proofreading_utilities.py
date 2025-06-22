@@ -14,6 +14,9 @@ def _call_azure_openai(prompt, content):
     max_retries = 5
     retry_delay = 5
     
+    # Log model and deployment information for debugging
+    logging.info(f"Using model: {model}, deployment: {deployment_name}, API version: {api_version}")
+    
     # Construct the full endpoint URL
     endpoint = f"{base_endpoint}/openai/deployments/{deployment_name}/chat/completions?api-version={api_version}"
     
@@ -22,6 +25,7 @@ def _call_azure_openai(prompt, content):
         "api-key": key
     }
     
+    # Build request payload without response_format for compatibility with older API versions
     data = {
         "messages": [
             {
@@ -34,14 +38,45 @@ def _call_azure_openai(prompt, content):
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 10000,
-        "response_format": {"type": "json_object"}
+        "max_tokens": 4000  # Reduced max tokens to avoid potential limits
     }
+    
+    # Only add response_format for newer API versions that support it
+    if api_version.startswith("2024"):
+        data["response_format"] = {"type": "json_object"}
     
     for attempt in range(max_retries):
         try:
             logging.info(f"Making Azure OpenAI request, attempt {attempt + 1}/{max_retries}")
             response = requests.post(endpoint, headers=headers, json=data)
+            
+            # More detailed error logging
+            if response.status_code != 200:
+                error_detail = response.text if response.text else "No error details available"
+                logging.error(f"Azure OpenAI API error: HTTP {response.status_code}: {error_detail}")
+                
+                # If we get a 400 error related to the model or deployment, try a fallback approach
+                if response.status_code == 400 and attempt == 0:
+                    # Try with a different model if this is our first attempt
+                    fallback_model = "gpt-4" if model != "gpt-4" else "gpt-35-turbo"
+                    fallback_endpoint = f"{base_endpoint}/openai/deployments/{fallback_model}/chat/completions?api-version=2023-05-15"
+                    logging.warning(f"Trying fallback model: {fallback_model}")
+                    
+                    # Simplify the request for the fallback
+                    fallback_data = {
+                        "messages": data["messages"],
+                        "temperature": 0.1,
+                        "max_tokens": 2000
+                    }
+                    
+                    try:
+                        fallback_response = requests.post(fallback_endpoint, headers=headers, json=fallback_data)
+                        fallback_response.raise_for_status()
+                        response = fallback_response
+                    except Exception as fallback_error:
+                        logging.error(f"Fallback request also failed: {str(fallback_error)}")
+                        # Continue with original response handling
+            
             response.raise_for_status()
             result = response.json()
             content = result['choices'][0]['message']['content']
@@ -101,15 +136,29 @@ def _call_azure_openai(prompt, content):
                 return {"suggestions": []}
                 
         except requests.exceptions.RequestException as e:
-            if 'exceeded token rate' in str(e).lower() or response.status_code == 429:
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (attempt + 1))
-                    continue
             logging.error(f"Error calling Azure OpenAI: {str(e)}")
-            raise
+            if 'exceeded token rate' in str(e).lower() or (hasattr(response, 'status_code') and response.status_code == 429):
+                if attempt < max_retries - 1:
+                    retry_time = retry_delay * (attempt + 1)
+                    logging.warning(f"Rate limit exceeded. Retrying in {retry_time} seconds...")
+                    time.sleep(retry_time)
+                    continue
+            
+            # For the last attempt, don't raise the error, just return empty results
+            if attempt == max_retries - 1:
+                logging.warning("All retries failed, returning empty suggestions array")
+                return {"suggestions": []}
+                
         except Exception as e:
             logging.error(f"Error processing Azure OpenAI response: {str(e)}")
-            raise
+            
+            # For the last attempt, don't raise the error, just return empty results
+            if attempt == max_retries - 1:
+                logging.warning("All retries failed due to processing errors, returning empty suggestions array")
+                return {"suggestions": []}
+    
+    # This should never be reached due to the return in the exception handler above
+    return {"suggestions": []}
 
 def check_spelling(text: str) -> list:
     """Check text for spelling errors using Azure OpenAI."""

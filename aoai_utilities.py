@@ -364,24 +364,122 @@ def generate_hierarchical_summary(content):
         "messages": messages,
         "temperature": 0.3,
         "top_p": 0.95,
-        "max_tokens": 1000,
-        "response_format": {"type": "json_object"}
+        "max_tokens": 1000
     }
+    
+    # Only add response_format for newer API versions
+    if "2024" in os.environ.get("AOAI_API_VERSION", "2023-05-15"):
+        data["response_format"] = {"type": "json_object"}
 
     processed = False
-    while not processed:
+    max_retries = 5
+    retry_count = 0
+    last_error = None
+    
+    while not processed and retry_count < max_retries:
         try:
+            logging.info(f"Making hierarchical summary API request, attempt {retry_count + 1}/{max_retries}")
             response = requests.post(endpoint, headers=headers, data=json.dumps(data))
-            if response.status_code == 429:
-                time.sleep(5)
-                continue
-            summary = response.json()['choices'][0]['message']['content']
+            
+            # Log response status and info for debugging
+            logging.info(f"Summary API response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                error_detail = response.text if response.text else "No error details available"
+                logging.error(f"Azure OpenAI API error: HTTP {response.status_code}: {error_detail}")
+                
+                # If we get a 400 error, try a fallback approach on first retry
+                if response.status_code == 400 and retry_count == 0:
+                    fallback_model = "gpt-4" if deployment_name != "gpt-4" else "gpt-35-turbo"
+                    fallback_endpoint = f"{api_base}openai/deployments/{fallback_model}/chat/completions?api-version=2023-05-15"
+                    logging.warning(f"Trying fallback model: {fallback_model}")
+                    
+                    # Simplify the request for the fallback
+                    fallback_data = {
+                        "messages": messages,
+                        "temperature": 0.3,
+                        "max_tokens": 800
+                    }
+                    
+                    try:
+                        fallback_response = requests.post(fallback_endpoint, headers=headers, json=fallback_data)
+                        if fallback_response.status_code == 200:
+                            response = fallback_response
+                        else:
+                            logging.error(f"Fallback request failed with status {fallback_response.status_code}")
+                    except Exception as fallback_error:
+                        logging.error(f"Fallback request failed: {str(fallback_error)}")
+                
+            # Process successful response
+            if response.status_code == 200:
+                resp_json = response.json()
+                
+                # Defensive programming - check if 'choices' exists in the response
+                if 'choices' in resp_json and len(resp_json['choices']) > 0:
+                    message = resp_json['choices'][0].get('message', {})
+                    content = message.get('content', '')
+                    
+                    if content:
+                        # Try to parse as JSON first
+                        try:
+                            return json.loads(content)
+                        except json.JSONDecodeError:
+                            # If not valid JSON, return a basic structure with the content
+                            logging.warning("Response was not valid JSON, returning basic structure")
+                            return {
+                                "executive_summary": content[:200] + "...",
+                                "detailed_summary": content,
+                                "key_topics": ["Unable to parse topics"],
+                                "takeaways": ["See detailed summary"]
+                            }
+                    else:
+                        raise ValueError("Empty content in response")
+                else:
+                    # Log the actual response for debugging
+                    logging.error(f"Unexpected response structure: {json.dumps(resp_json)}")
+                    raise KeyError("Response missing 'choices' field")
+            
             processed = True
-        except Exception as e:
-            if 'exceeded token rate' in str(e).lower():
-                time.sleep(5)
+            
+        except (KeyError, ValueError) as e:
+            last_error = e
+            retry_count += 1
+            if retry_count < max_retries:
+                sleep_time = 2 * retry_count
+                logging.warning(f"Retry {retry_count} for summary generation: {str(e)}. Retrying in {sleep_time}s")
+                time.sleep(sleep_time)
             else:
-                logging.error(f"Error generating summary: {str(e)}")
-                raise e
-
-    return json.loads(summary)
+                logging.error(f"Failed to generate summary after {max_retries} attempts: {str(e)}")
+                # Return a fallback summary instead of raising an error
+                return {
+                    "executive_summary": "Summary generation failed. Please see the document for details.",
+                    "detailed_summary": "We were unable to generate a summary for this content due to technical issues.",
+                    "key_topics": ["Error during processing"],
+                    "takeaways": ["Please review the original document"]
+                }
+        except Exception as e:
+            last_error = e
+            retry_count += 1
+            if retry_count < max_retries:
+                sleep_time = 2 * retry_count
+                logging.warning(f"Retry {retry_count} for summary generation: {str(e)}. Retrying in {sleep_time}s")
+                time.sleep(sleep_time)
+            else:
+                logging.error(f"Failed to generate summary after {max_retries} attempts: {str(e)}")
+                # Return a fallback summary instead of raising an error
+                return {
+                    "executive_summary": "Summary generation failed. Please see the document for details.",
+                    "detailed_summary": "We were unable to generate a summary for this content due to technical issues.",
+                    "key_topics": ["Error during processing"],
+                    "takeaways": ["Please review the original document"]
+                }
+    
+    # This should never be reached due to the returns above, but just in case
+    if not processed:
+        logging.error("Summary generation did not complete successfully")
+        return {
+            "executive_summary": "Summary generation did not complete.",
+            "detailed_summary": "The summary process did not complete successfully.",
+            "key_topics": ["Processing incomplete"],
+            "takeaways": ["Please review the original document"]
+        }

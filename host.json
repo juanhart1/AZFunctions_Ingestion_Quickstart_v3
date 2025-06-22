@@ -10,7 +10,7 @@
     "logLevel": {
       "default": "Information",
       "Function": "Information",
-      "Host.Triggers.DurableTask": "Information"
+      "Host.Triggers.DurableTask": "Warning"
     }
   },
   "extensionBundle": {
@@ -22,7 +22,10 @@
       "hubName": "IngestionTaskHub",
       "storageProvider": {
         "connectionStringName": "AzureWebJobsStorage"
-      }
+      },
+      "maxConcurrentActivityFunctions": 100,
+      "maxConcurrentOrchestratorFunctions": 20
     }
-  }
+  },
+  "functionTimeout": "00:30:00"
 }

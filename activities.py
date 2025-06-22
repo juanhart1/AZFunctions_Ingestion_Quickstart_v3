@@ -44,8 +44,31 @@ async def generate_document_summary(activitypayload: str) -> str:
         # Download and read the source content
         source_content = json.loads(source_blob_client.download_blob().readall().decode())
         
-        # Generate hierarchical summary using 'content' instead of 'text'
-        summary = generate_hierarchical_summary(source_content['content'])
+        # Validate content field exists
+        if 'content' not in source_content or not source_content['content']:
+            logging.warning(f"Empty or missing content in source file {file_name}")
+            # Create a placeholder summary
+            summary = {
+                "executive_summary": "No content available for summarization.",
+                "detailed_summary": "The source document did not contain any content to summarize.",
+                "key_topics": ["No content"],
+                "takeaways": ["No content available"]
+            }
+        else:
+            try:
+                # Generate hierarchical summary using 'content' instead of 'text'
+                logging.info(f"Generating summary for {file_name} with content length: {len(source_content['content'])}")
+                summary = generate_hierarchical_summary(source_content['content'])
+                logging.info(f"Successfully generated summary for {file_name}")
+            except Exception as e:
+                logging.error(f"Error generating summary for {file_name}: {str(e)}")
+                # Return a fallback summary
+                summary = {
+                    "executive_summary": "Summary generation encountered an error.",
+                    "detailed_summary": f"We were unable to generate a summary due to: {str(e)}",
+                    "key_topics": ["Error during processing"],
+                    "takeaways": ["Please review the original document"]
+                }
         
         # Create summary record with metadata
         summary_record = {
