@@ -22,7 +22,7 @@
         "storageProvider": {
           "connectionStringName": "AzureWebJobsStorage"
         },
-        "maxConcurrentActivityFunctions": 100,
+        "maxConcurrentActivityFunctions": 200,
         "maxConcurrentOrchestratorFunctions": 50
       }
     },

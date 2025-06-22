@@ -1703,6 +1703,8 @@ def split_pdf_files(activitypayload: str):
     # Return the list of PDF chunks
     return pdf_chunks
     
+
+    
 @app.activity_trigger(input_name="activitypayload")
 def process_pdf_with_document_intelligence(activitypayload: str):
     """
@@ -2035,7 +2037,6 @@ def chunk_extracts(activitypayload: str):
         extracted_files.append(blob.name)
 
     out_files = []
-
     if chunking_strategy=='pagewise':
         for file in extracted_files:
             # Get a BlobClient object for the extracts file
@@ -2887,11 +2888,11 @@ def generate_document_level_summary_activity(activitypayload: str):
     # Combine summaries into a single text, respecting the hierarchy
     combined_text = ""
     if executive_summaries:
-        combined_text += "Executive Summaries:\n" + "\n\n".join(executive_summaries) + "\n\n"
+        combined_text += "Executive Summaries:\n" + "\n\n".join(str(s) if s is not None else "" for s in executive_summaries) + "\n\n"
     if detailed_summaries:
-        combined_text += "Detailed Summaries:\n" + "\n\n".join(detailed_summaries) + "\n\n"
+        combined_text += "Detailed Summaries:\n" + "\n\n".join(str(s) if s is not None else "" for s in detailed_summaries) + "\n\n"
     if page_summaries:  # For any legacy format summaries
-        combined_text += "Additional Summaries:\n" + "\n\n".join(page_summaries)
+        combined_text += "Additional Summaries:\n" + "\n\n".join(str(s) if s is not None else "" for s in page_summaries)
 
     # Generate document-level summary
     doc_summary = generate_hierarchical_summary(combined_text.strip())
@@ -2954,23 +2955,21 @@ def proofreading_orchestrator(context):
             
         # Process each page in parallel
         proofread_tasks = []
-        for page_file in page_files:
-            page_payload = {
-                'doc_intel_formatted_results_container': doc_intel_container,
-                'proofreading_container': proofreading_container,
-                'file': page_file
-            }
-            
-            # Call the page proofread activity with retry options
-            task = context.call_activity_with_retry(
-                "generate_page_proofread_activity",
-                retry_options,
-                json.dumps(page_payload)
+        for doc_result in doc_intel_formatted_results:
+            proofread_tasks.append(
+                context.call_activity_with_retry(
+                    "generate_page_proofread_activity",
+                    retry_options,
+                    json.dumps({
+                        'doc_intel_formatted_results_container': doc_intel_container,
+                        'proofreading_container': proofreading_container,
+                        'file': doc_result
+                    })
+                )
             )
-            proofread_tasks.append(task)
-            
-        # Wait for all page processing to complete
-        page_results = yield context.task_all(proofread_tasks)
+        proofread_results = yield context.task_all(proofread_tasks)
+        
+        context.set_custom_status('Page-Level Proofreading Complete')
         
         # Generate document-level summary
         doc_payload = {
@@ -2985,11 +2984,12 @@ def proofreading_orchestrator(context):
             json.dumps(doc_payload)
         )
         
+        context.set_custom_status('Document-Level Proofreading Complete')
+        
+        # Return the results if needed
         return {
-            'status': 'completed',
-            'parent_file': parent_file,
-            'page_results': page_results,
-            'document_result': document_result
+            "page_level": proofread_results,
+            "doc_level": document_result
         }
         
     except Exception as e:
@@ -3039,23 +3039,25 @@ def run_proofreading_pipeline(context):
         
         context.set_custom_status('Page-Level Proofreading Complete')
         
-        # Generate document-level proofreading results
-        doc_proofread_result = yield context.call_activity_with_retry(
+        # Generate document-level summary
+        doc_payload = {
+            'source_container': doc_intel_formatted_results_container,
+            'proofreading_container': proofreading_container,
+            'parent_file': parent_files[0]  # Assuming single file processing
+        }
+        
+        document_result = yield context.call_activity_with_retry(
             "generate_document_proofread_activity",
             retry_options,
-            json.dumps({
-                'source_container': source_container,
-                'proofreading_container': proofreading_container,
-                'parent_file': parent_files[0]  # Assuming single file processing
-            })
+            json.dumps(doc_payload)
         )
         
         context.set_custom_status('Document-Level Proofreading Complete')
         
-        # Return the results if needed
+        # Return the results
         return {
             "page_level": proofread_results,
-            "doc_level": doc_proofread_result
+            "doc_level": document_result
         }
     except Exception as e:
         context.set_custom_status('Proofreading Pipeline Failed')
