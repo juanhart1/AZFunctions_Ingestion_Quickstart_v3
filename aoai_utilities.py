@@ -341,9 +341,16 @@ def generate_hierarchical_summary(content):
     
     Return the summary as a JSON object with these sections."""
 
+    # Truncate content if it's too long to avoid token limits
+    max_content_length = 30000
+    if len(content) > max_content_length:
+        content_preview = content[:max_content_length] + "... [content truncated for length]"
+    else:
+        content_preview = content
+
     user_msg = f"""Generate a hierarchical summary of this document content:
 
-    {content}"""
+    {content_preview}"""
 
     messages = [
         {"role": "system", "content": sys_msg},
@@ -352,14 +359,18 @@ def generate_hierarchical_summary(content):
 
     api_base = os.environ['AOAI_ENDPOINT']
     api_key = os.environ['AOAI_KEY']
-    deployment_name = os.environ['AOAI_GPT_MODEL']
+    deployment_name = os.environ.get('AOAI_DEPLOYMENT_NAME', os.environ.get('AOAI_GPT_MODEL', 'gpt-4o'))
+    api_version = os.environ.get('AOAI_API_VERSION', '2023-05-15')
+
+    logging.info(f"Using model: {deployment_name}, API version: {api_version} for summary generation")
 
     base_url = f"{api_base}openai/deployments/{deployment_name}"
     headers = {
         "Content-Type": "application/json",
         "api-key": api_key
     }
-    endpoint = f"{base_url}/chat/completions?api-version=2025-01-01-preview"
+    
+    endpoint = f"{base_url}/chat/completions?api-version={api_version}"
     data = {
         "messages": messages,
         "temperature": 0.3,
@@ -368,7 +379,7 @@ def generate_hierarchical_summary(content):
     }
     
     # Only add response_format for newer API versions
-    if "2024" in os.environ.get("AOAI_API_VERSION", "2023-05-15"):
+    if api_version.startswith("2024"):
         data["response_format"] = {"type": "json_object"}
 
     processed = False
@@ -388,27 +399,74 @@ def generate_hierarchical_summary(content):
                 error_detail = response.text if response.text else "No error details available"
                 logging.error(f"Azure OpenAI API error: HTTP {response.status_code}: {error_detail}")
                 
-                # If we get a 400 error, try a fallback approach on first retry
-                if response.status_code == 400 and retry_count == 0:
-                    fallback_model = "gpt-4" if deployment_name != "gpt-4" else "gpt-35-turbo"
-                    fallback_endpoint = f"{api_base}openai/deployments/{fallback_model}/chat/completions?api-version=2023-05-15"
-                    logging.warning(f"Trying fallback model: {fallback_model}")
-                    
-                    # Simplify the request for the fallback
-                    fallback_data = {
-                        "messages": messages,
-                        "temperature": 0.3,
-                        "max_tokens": 800
-                    }
-                    
+                # Handle content filtering errors specifically
+                content_filtered = False
+                if response.status_code == 400:
                     try:
-                        fallback_response = requests.post(fallback_endpoint, headers=headers, json=fallback_data)
-                        if fallback_response.status_code == 200:
-                            response = fallback_response
-                        else:
-                            logging.error(f"Fallback request failed with status {fallback_response.status_code}")
-                    except Exception as fallback_error:
-                        logging.error(f"Fallback request failed: {str(fallback_error)}")
+                        error_json = response.json()
+                        error_message = error_json.get('error', {}).get('message', '')
+                        if 'content management policy' in error_message or 'content filter' in error_message.lower():
+                            content_filtered = True
+                            logging.warning("Content filtered by Azure OpenAI safety system")
+                    except Exception:
+                        pass  # Continue with normal error handling
+                
+                # If we get a 400 or 404 error, try fallback models
+                if (response.status_code == 400 or response.status_code == 404) and retry_count == 0:
+                    # Define fallback models in order of preference
+                    fallback_models = []
+                    
+                    # Primary fallback model is gpt-4 if we're not already using it
+                    if deployment_name != "gpt-4":
+                        fallback_models.append("gpt-4")
+                    
+                    # Secondary fallback is gpt-35-turbo
+                    if deployment_name != "gpt-35-turbo":
+                        fallback_models.append("gpt-35-turbo")
+                    
+                    # Try each fallback model
+                    for fallback_model in fallback_models:
+                        try:
+                            fallback_endpoint = f"{api_base}openai/deployments/{fallback_model}/chat/completions?api-version=2023-05-15"
+                            logging.warning(f"Trying fallback model: {fallback_model}")
+                            
+                            # Use simplified prompt for fallback to reduce chances of content filtering
+                            if content_filtered:
+                                # Simplify the system prompt to avoid content filtering
+                                fallback_messages = [
+                                    {"role": "system", "content": "You are a helpful assistant. Create a document summary in JSON format."},
+                                    {"role": "user", "content": f"Summarize this text in JSON format with executive_summary, detailed_summary, key_topics, and takeaways fields: {content_preview[:5000]}..."}
+                                ]
+                            else:
+                                # Use original messages if not content filtered
+                                fallback_messages = messages
+                            
+                            fallback_data = {
+                                "messages": fallback_messages,
+                                "temperature": 0.3,
+                                "max_tokens": 800
+                            }
+                            
+                            fallback_response = requests.post(fallback_endpoint, headers=headers, json=fallback_data)
+                            
+                            if fallback_response.status_code == 200:
+                                logging.info(f"Fallback to {fallback_model} succeeded")
+                                response = fallback_response
+                                break
+                            else:
+                                fallback_error = fallback_response.text if fallback_response.text else f"HTTP {fallback_response.status_code}"
+                                logging.error(f"Fallback to {fallback_model} failed: {fallback_error}")
+                        except Exception as fallback_error:
+                            logging.error(f"Fallback to {fallback_model} failed: {str(fallback_error)}")
+                
+                # If still not successful, move to next retry
+                if response.status_code != 200:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        sleep_time = 2 * retry_count
+                        logging.warning(f"Retrying in {sleep_time} seconds")
+                        time.sleep(sleep_time)
+                    continue
                 
             # Process successful response
             if response.status_code == 200:

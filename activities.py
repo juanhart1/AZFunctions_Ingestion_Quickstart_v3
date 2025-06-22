@@ -4,10 +4,34 @@ import json
 import os
 import hashlib
 import asyncio
+import concurrent.futures
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 from aoai_utilities import generate_hierarchical_summary
 from proofreading_utilities import check_spelling, check_grammar, check_clarity, check_style
+
+# Create a thread pool executor for running blocking functions
+thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+
+async def run_in_threadpool(func, *args, **kwargs):
+    """Run a blocking function in a thread pool to avoid blocking the event loop."""
+    return await asyncio.get_event_loop().run_in_executor(
+        thread_pool, 
+        lambda: func(*args, **kwargs)
+    )
+
+# Async wrappers for proofreading utility functions
+async def async_check_spelling(text):
+    return await run_in_threadpool(check_spelling, text)
+
+async def async_check_grammar(text):
+    return await run_in_threadpool(check_grammar, text)
+
+async def async_check_clarity(text):
+    return await run_in_threadpool(check_clarity, text)
+
+async def async_check_style(text):
+    return await run_in_threadpool(check_style, text)
 
 async def generate_document_summary(activitypayload: str) -> str:
     """
@@ -59,6 +83,20 @@ async def generate_document_summary(activitypayload: str) -> str:
                 # Generate hierarchical summary using 'content' instead of 'text'
                 logging.info(f"Generating summary for {file_name} with content length: {len(source_content['content'])}")
                 summary = generate_hierarchical_summary(source_content['content'])
+                
+                # Validate the summary has all expected fields
+                expected_fields = ["executive_summary", "detailed_summary", "key_topics", "takeaways"]
+                missing_fields = [field for field in expected_fields if field not in summary]
+                
+                if missing_fields:
+                    logging.warning(f"Summary is missing expected fields: {missing_fields}")
+                    # Add placeholder values for missing fields
+                    for field in missing_fields:
+                        if field in ["executive_summary", "detailed_summary"]:
+                            summary[field] = "Summary generation was incomplete."
+                        else:  # key_topics and takeaways are lists
+                            summary[field] = ["Summary generation was incomplete"]
+                
                 logging.info(f"Successfully generated summary for {file_name}")
             except Exception as e:
                 logging.error(f"Error generating summary for {file_name}: {str(e)}")
@@ -157,20 +195,30 @@ async def generate_page_proofread(activitypayload: str) -> str:
         
         for attempt in range(max_retries):
             try:
-                # Process each check separately for better error handling
-                for check_type, check_func in [
-                    ('spelling', check_spelling),
-                    ('grammar', check_grammar),
-                    ('clarity', check_clarity),
-                    ('style', check_style)
-                ]:
-                    try:
-                        logging.info(f"Starting {check_type} check (attempt {attempt + 1}/{max_retries})")
-                        results = check_func(content)
-                        proofread_results[check_type] = results
-                        logging.info(f"Completed {check_type} check, found {len(results)} issues")
-                    except Exception as check_error:
-                        logging.error(f"Error in {check_type} check: {str(check_error)}", exc_info=True)
+                # Define check functions to run in parallel
+                check_tasks = {
+                    'spelling': async_check_spelling(content),
+                    'grammar': async_check_grammar(content),
+                    'clarity': async_check_clarity(content),
+                    'style': async_check_style(content)
+                }
+                
+                # Execute all checks in parallel using asyncio.gather
+                logging.info(f"Running all proofread checks in parallel (attempt {attempt + 1}/{max_retries})")
+                results = await asyncio.gather(
+                    *check_tasks.values(),
+                    return_exceptions=True  # This ensures one failed check doesn't cancel the others
+                )
+                
+                # Process results for each check
+                for (check_type, _), result in zip(check_tasks.items(), results):
+                    # If the check succeeded, store the results
+                    if not isinstance(result, Exception):
+                        proofread_results[check_type] = result
+                        logging.info(f"Completed {check_type} check, found {len(result)} issues")
+                    # If the check failed, log the error and leave empty results
+                    else:
+                        logging.error(f"Error in {check_type} check: {str(result)}", exc_info=True)
                         proofread_results[check_type] = []
                 
                 # If we got here, we have at least partial results
