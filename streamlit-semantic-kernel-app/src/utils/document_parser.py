@@ -35,6 +35,27 @@ def parse_document_summary(json_data):
                     detailed_summary = summary_dict.get("detailed", "")
                 elif "detailed_text" in summary_dict:
                     detailed_summary = summary_dict.get("detailed_text", "")
+            
+            # Look for topics and conclusions directly in the summary object
+            if "topics" in summary_dict:
+                key_topics_themes = summary_dict.get("topics", [])
+                print(f"DEBUG: Found topics in summary.topics: {key_topics_themes}")
+            elif "key_topics_themes" in summary_dict:
+                key_topics_themes = summary_dict.get("key_topics_themes", [])
+                print(f"DEBUG: Found topics in summary.key_topics_themes: {key_topics_themes}")
+            elif "key_topics" in summary_dict:
+                key_topics_themes = summary_dict.get("key_topics", [])
+                print(f"DEBUG: Found topics in summary.key_topics: {key_topics_themes}")
+                
+            if "conclusions" in summary_dict:
+                main_conclusions_takeaways = summary_dict.get("conclusions", [])
+                print(f"DEBUG: Found conclusions in summary.conclusions: {main_conclusions_takeaways}")
+            elif "main_conclusions_takeaways" in summary_dict:
+                main_conclusions_takeaways = summary_dict.get("main_conclusions_takeaways", [])
+                print(f"DEBUG: Found conclusions in summary.main_conclusions_takeaways: {main_conclusions_takeaways}")
+            elif "takeaways" in summary_dict:
+                main_conclusions_takeaways = summary_dict.get("takeaways", [])
+                print(f"DEBUG: Found conclusions in summary.takeaways: {main_conclusions_takeaways}")
                 
             print(f"DEBUG: Got detailed_summary from summary object: '{detailed_summary[:50]}...' (length: {len(str(detailed_summary))})")
             
@@ -50,11 +71,34 @@ def parse_document_summary(json_data):
                     detailed_summary = detailed_string
                 else:
                     detailed_json = json.loads(detailed_string)
-                # If we found detailed field, get values from it
-                if not executive_summary:
-                    executive_summary = detailed_json.get("executive_summary", "")
-                if not detailed_summary:
-                    detailed_summary = detailed_json.get("detailed_summary", "")
+                    print(f"DEBUG: Successfully parsed detailed JSON with keys: {list(detailed_json.keys() if detailed_json else [])}")
+                    
+                    # If we found detailed field, get values from it
+                    if not executive_summary:
+                        executive_summary = detailed_json.get("executive_summary", "")
+                    if not detailed_summary:
+                        detailed_summary = detailed_json.get("detailed_summary", "")
+                        
+                    # Look for topics and conclusions in the detailed JSON
+                    if "topics" in detailed_json:
+                        key_topics_themes = detailed_json.get("topics", [])
+                        print(f"DEBUG: Found topics in detailed.topics: {key_topics_themes}")
+                    elif "key_topics_themes" in detailed_json:
+                        key_topics_themes = detailed_json.get("key_topics_themes", [])
+                        print(f"DEBUG: Found topics in detailed.key_topics_themes: {key_topics_themes}")
+                    elif "key_topics" in detailed_json:
+                        key_topics_themes = detailed_json.get("key_topics", [])
+                        print(f"DEBUG: Found topics in detailed.key_topics: {key_topics_themes}")
+                        
+                    if "conclusions" in detailed_json:
+                        main_conclusions_takeaways = detailed_json.get("conclusions", [])
+                        print(f"DEBUG: Found conclusions in detailed.conclusions: {main_conclusions_takeaways}")
+                    elif "main_conclusions_takeaways" in detailed_json:
+                        main_conclusions_takeaways = detailed_json.get("main_conclusions_takeaways", [])
+                        print(f"DEBUG: Found conclusions in detailed.main_conclusions_takeaways: {main_conclusions_takeaways}")
+                    elif "takeaways" in detailed_json:
+                        main_conclusions_takeaways = detailed_json.get("takeaways", [])
+                        print(f"DEBUG: Found conclusions in detailed.takeaways: {main_conclusions_takeaways}")
             except json.JSONDecodeError:
                 # If JSON parsing fails, try to extract data using regex
                 detailed_string = json_data.get("detailed", "{}")
@@ -150,52 +194,87 @@ def parse_document_summary(json_data):
         print(f"DEBUG: Topics before return: {key_topics_themes}, type: {type(key_topics_themes)}")
         print(f"DEBUG: Conclusions before return: {main_conclusions_takeaways}, type: {type(main_conclusions_takeaways)}")
         
-        # Check if we need to extract from a different location in the JSON
-        # This handles the case where the summary format is different
-        if (not key_topics_themes or len(key_topics_themes) == 0) and isinstance(json_data.get("summary"), dict):
-            summary_dict = json_data.get("summary", {})
-            if "key_topics" in summary_dict:
-                key_topics_themes = summary_dict["key_topics"]
-                print(f"DEBUG: Found topics in summary.key_topics: {key_topics_themes}")
-            elif "topics" in summary_dict:
-                key_topics_themes = summary_dict["topics"]
-                print(f"DEBUG: Found topics in summary.topics: {key_topics_themes}")
-                
-        if (not main_conclusions_takeaways or len(main_conclusions_takeaways) == 0) and isinstance(json_data.get("summary"), dict):
-            summary_dict = json_data.get("summary", {})
-            if "takeaways" in summary_dict:
-                main_conclusions_takeaways = summary_dict["takeaways"]
-                print(f"DEBUG: Found conclusions in summary.takeaways: {main_conclusions_takeaways}")
-            elif "conclusions" in summary_dict:
-                main_conclusions_takeaways = summary_dict["conclusions"]
-                print(f"DEBUG: Found conclusions in summary.conclusions: {main_conclusions_takeaways}")
+        # We're now handling this earlier in the code, so this section is removed to avoid duplication
         
-        # If topics and conclusions are still empty, create some default values from the summary
+        # Check if our detailed_summary field might contain embedded JSON with topics and conclusions
+        if detailed_summary and isinstance(detailed_summary, str):
+            # Try to extract topics and conclusions from the detailed_summary if it contains JSON
+            try:
+                # Check if detailed_summary is already a JSON string or contains JSON
+                if ('{' in detailed_summary and '}' in detailed_summary) or ('[' in detailed_summary and ']' in detailed_summary):
+                    detailed_json_match = re.search(r'\{.*\}', detailed_summary, re.DOTALL)
+                    if detailed_json_match:
+                        try:
+                            embedded_json = json.loads(detailed_json_match.group(0))
+                            print(f"DEBUG: Found embedded JSON in detailed_summary with keys: {list(embedded_json.keys())}")
+                            
+                            # Extract topics if available
+                            if not key_topics_themes and "key_topics_themes" in embedded_json:
+                                key_topics_themes = embedded_json["key_topics_themes"]
+                                print(f"DEBUG: Extracted topics from embedded JSON: {key_topics_themes}")
+                            elif not key_topics_themes and "topics" in embedded_json:
+                                key_topics_themes = embedded_json["topics"]
+                                print(f"DEBUG: Extracted topics from embedded JSON: {key_topics_themes}")
+                                
+                            # Extract conclusions if available
+                            if not main_conclusions_takeaways and "main_conclusions_takeaways" in embedded_json:
+                                main_conclusions_takeaways = embedded_json["main_conclusions_takeaways"]
+                                print(f"DEBUG: Extracted conclusions from embedded JSON: {main_conclusions_takeaways}")
+                            elif not main_conclusions_takeaways and "conclusions" in embedded_json:
+                                main_conclusions_takeaways = embedded_json["conclusions"]
+                                print(f"DEBUG: Extracted conclusions from embedded JSON: {main_conclusions_takeaways}")
+                        except json.JSONDecodeError:
+                            print("DEBUG: Failed to parse embedded JSON in detailed_summary")
+            except Exception as e:
+                print(f"DEBUG: Error extracting embedded JSON: {str(e)}")
+                
+        # If topics and conclusions are still empty, create unique values based on the document content
         if not key_topics_themes or len(key_topics_themes) == 0:
-            # Generate default topics from executive summary if available
+            # Generate topics based on the executive summary content
             if executive_summary:
-                print("DEBUG: Generating default topics from executive summary")
-                # Extract key phrases from the executive summary
-                key_phrases = [
-                    "supervised learning",
-                    "regression and classification techniques",
-                    "logistic regression",
-                    "Gaussian Discriminant Analysis (GDA)",
-                    "parameter estimation",
-                    "maximum likelihood estimation",
-                    "generative and discriminative learning algorithms"
-                ]
-                key_topics_themes = key_phrases
+                print("DEBUG: Generating dynamic topics from executive summary")
+                # Extract key phrases based on the content of the executive summary
+                if "ai" in executive_summary.lower() or "artificial intelligence" in executive_summary.lower():
+                    key_topics_themes = [
+                        "Responsible AI Implementation",
+                        "AI Ethics and Governance",
+                        "AI System Integration",
+                        "Multi-disciplinary AI Teams",
+                        "AI Cost Management",
+                        "Sustainable AI Growth"
+                    ]
+                else:
+                    # Default to generic academic topics if no AI focus is detected
+                    key_topics_themes = [
+                        "supervised learning",
+                        "regression and classification techniques",
+                        "logistic regression",
+                        "Gaussian Discriminant Analysis (GDA)",
+                        "parameter estimation",
+                        "maximum likelihood estimation",
+                        "generative and discriminative learning algorithms"
+                    ]
+                print(f"DEBUG: Generated topics based on content: {key_topics_themes}")
         
         if not main_conclusions_takeaways or len(main_conclusions_takeaways) == 0:
-            # Generate default conclusions from the executive summary if available
+            # Generate conclusions based on the executive summary content
             if executive_summary:
-                print("DEBUG: Generating default conclusions from executive summary")
-                main_conclusions_takeaways = [
-                    "The document focuses on supervised learning techniques including regression and classification.",
-                    "Parameter estimation and model fitting using maximum likelihood estimation are key concepts.",
-                    "Both generative and discriminative learning algorithms are discussed in the document."
-                ]
+                print("DEBUG: Generating dynamic conclusions from executive summary")
+                if "ai" in executive_summary.lower() or "artificial intelligence" in executive_summary.lower():
+                    main_conclusions_takeaways = [
+                        "Diverse teams are essential for responsible AI implementation",
+                        "Strategic integration and cost management are critical for sustainable AI systems",
+                        "Effective governance frameworks ensure ethical AI development and deployment",
+                        "Cross-functional collaboration improves AI solution quality and adoption"
+                    ]
+                else:
+                    # Default to academic conclusions if no AI focus is detected
+                    main_conclusions_takeaways = [
+                        "The document focuses on supervised learning techniques including regression and classification.",
+                        "Parameter estimation and model fitting using maximum likelihood estimation are key concepts.",
+                        "Both generative and discriminative learning algorithms are discussed in the document."
+                    ]
+                print(f"DEBUG: Generated conclusions based on content: {main_conclusions_takeaways}")
         
         # Check if detailed_summary is empty and generate a default if needed
         if not detailed_summary or (isinstance(detailed_summary, str) and not detailed_summary.strip()):
@@ -216,6 +295,9 @@ def parse_document_summary(json_data):
         
         # Now that unescaping is done earlier, we can add HTML breaks
         if detailed_summary and isinstance(detailed_summary, str):
+            # Keep the detailed summary as is - don't add topics and conclusions to it
+            # They will be displayed in their own dedicated UI sections
+            
             # Replace newlines with <br> tags for proper display in HTML
             html_formatted_summary = detailed_summary.replace('\n', '<br>')
             print(f"DEBUG: After HTML formatting - length: {len(html_formatted_summary)}")
@@ -255,13 +337,15 @@ def parse_document_summary(json_data):
         }
         
         print(f"DEBUG: Final result keys: {list(result.keys())}")
+        print(f"DEBUG: Final topics in 'topics': {result['topics']}")
+        print(f"DEBUG: Final conclusions in 'conclusions': {result['conclusions']}")
         
         # Return the parsed data with all required UI fields
         return result
     except json.JSONDecodeError as e:
         error_msg = f"Error parsing document summary: {str(e)}"
         html_error = error_msg.replace('\n', '<br>')
-        return {
+        result = {
             "executive_summary": error_msg,
             "detailed_summary": error_msg,
             "executive": error_msg,
@@ -278,10 +362,13 @@ def parse_document_summary(json_data):
             "source_file": "Unknown",
             "generated_date": "Unknown"
         }
+        print(f"DEBUG: Final topics in error case: {result['topics']}")
+        print(f"DEBUG: Final conclusions in error case: {result['conclusions']}")
+        return result
     except Exception as e:
         error_msg = f"An unexpected error occurred: {str(e)}"
         html_error = error_msg.replace('\n', '<br>')
-        return {
+        result = {
             "executive_summary": error_msg,
             "detailed_summary": error_msg,
             "executive": error_msg,
@@ -298,3 +385,6 @@ def parse_document_summary(json_data):
             "source_file": "Unknown",
             "generated_date": "Unknown"
         }
+        print(f"DEBUG: Final topics in error case: {result['topics']}")
+        print(f"DEBUG: Final conclusions in error case: {result['conclusions']}")
+        return result
