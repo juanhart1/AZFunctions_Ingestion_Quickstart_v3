@@ -4,16 +4,30 @@
 
 ## Project Overview
 
-The 'Azure Functions Quickstart - Generative AI Data Ingestion Functions' project is an Azure Durable Functions project aimed at streamlining the process of ingesting, chunking, and vectorizing PDF-based documents. These processes are critical for indexing and utilizing data in Retrieval Augmented Generation (RAG) patterns within Generative AI applications.
+The 'Azure Functions Quickstart - Generative AI Data Ingestion Functions' project is an Azure Durable Functions project aimed at streamlining the process of ingesting, chunking, and vectorizing documents. These processes are critical for indexing and utilizing data in Retrieval Augmented Generation (RAG) patterns within Generative AI applications.
 
 By leveraging Azure Durable Functions, the project orchestrates the complex workflows involved in data processing, ensuring efficiency and scalability. It includes capabilities for creating and managing Azure AI Search indexes, updating index aliases for deployment strategies, and indexing large volumes of pre-processed documents in bulk.
+
+### Streamlit Application
+
+The project now includes a **Streamlit-based user interface** (`streamlit-semantic-kernel-app/`) that provides an easy-to-use web interface for interacting with processed documents. This application uses Microsoft Semantic Kernel as an orchestration layer to provide:
+
+- **Document Q&A**: Ask questions about indexed documents using RAG with Azure AI Search
+- **Document Summarization**: Generate and view document summaries
+- **Document Proofreading**: Check documents for grammar, spelling, and style issues
+- **Document Comparison**: Compare multiple documents to identify similarities and differences
+- **Document Upload**: Upload new documents with configurable ingestion parameters
+- **Intent Routing**: Automatically determine user intent from natural language queries
 
 ## Features
 - **Ingestion and Chunking**: Automated breakdown of documents and audio files into chunks for easier processing.
 - **Vectorization**: Transformation of textual and auditory information into vector embeddings suitable for AI models.
 - **Index Management**: Tools for creating and updating Azure AI Search indexes to optimize data retrieval.
 - **Workflow Orchestration**: Utilization of Durable Functions to coordinate and manage data processing tasks.
-- **Postman Collection**: Sample postman collection (``) demonstrating calling of all functions.
+- **Interactive Web Interface**: Streamlit-based UI for document interaction and management.
+- **Semantic Kernel Integration**: Microsoft Semantic Kernel for advanced AI orchestration.
+- **Multi-modal Processing**: Support for PDF, audio, video, and other document formats.
+- **Postman Collection**: Sample postman collection demonstrating calling of all functions.
 
 ## Getting Started
 
@@ -30,6 +44,30 @@ By leveraging Azure Durable Functions, the project orchestrates the complex work
 1. Clone the repository to your desired environment.
 2. Install Azure Functions Core Tools if not already available.
 3. In the project directory, install dependencies with `pip install -r requirements.txt`.
+
+### Streamlit Application Setup
+The Streamlit application provides a user-friendly interface for document processing:
+
+1. Navigate to the Streamlit app directory:
+   ```bash
+   cd streamlit-semantic-kernel-app
+   ```
+2. Create a virtual environment and install dependencies:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+3. Configure environment variables (copy `.env.example` to `.env` and fill in your Azure credentials).
+4. Run the application:
+   ```bash
+   cd src
+   streamlit run app.py
+   ```
+   For the enhanced version with intent routing:
+   ```bash
+   streamlit run app_with_router.py
+   ```
 
 ### Configuration
 Configure the environment variables in your Azure Function App settings as follows:
@@ -52,6 +90,21 @@ Configure the environment variables in your Azure Function App settings as follo
 | `COSMOS_DATABASE`        | Name of the Azure Cosmos DB database which will hold status records              |
 | `COSMOS_CONTAINER`        | Name of the Azure Cosmos DB collection which will hold status records              |
 | `COSMOS_PROFILE_CONTAINER`        | Name of the Azure Cosmos DB collection which will index profile records              |
+
+### Streamlit Application Environment Variables
+Additional environment variables for the Streamlit application:
+
+| Variable Name                | Description                                               |
+|------------------------------|-----------------------------------------------------------|
+| `AZURE_STORAGE_CONNECTION_STRING` | Azure Storage account connection string for document access |
+| `AZURE_OPENAI_ENDPOINT`      | Azure OpenAI endpoint for Semantic Kernel               |
+| `AZURE_OPENAI_API_KEY`       | Azure OpenAI API key                                     |
+| `AZURE_OPENAI_COMPLETION_DEPLOYMENT` | Deployment name for completions                    |
+| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | Deployment name for embeddings                     |
+| `QA_CONTAINER`               | Container name for Q&A documents                         |
+| `SUMMARY_CONTAINER`          | Container name for document summaries                    |
+| `PROOFREADING_CONTAINER`     | Container name for proofreading results                  |
+| `DOCUMENTS_CONTAINER`        | Container name for general documents                     |
 
 <i>Note: review the `sample.settings.json` to create a `local.settings.json` environment file for local execution.</i>
 
@@ -113,7 +166,20 @@ az functionapp config appsettings set -g <resource-group-name> -n <function-app-
 
 ## Utilization & Testing
 
-Shown below are some of the common calls the created functions for creating, and populating an Azure AI Search index using files uploaded to Azure Blob Storage.
+### Using the Streamlit Interface
+
+The easiest way to interact with the system is through the Streamlit web interface:
+
+1. **Document Upload**: Upload documents through the web interface with configurable ingestion parameters
+2. **Document Processing**: Use natural language queries to interact with documents
+3. **Q&A**: Ask questions about uploaded documents using RAG
+4. **Summarization**: Generate and view document summaries
+5. **Proofreading**: Check documents for errors and style issues
+6. **Document Comparison**: Compare multiple documents side-by-side
+
+### API Testing
+
+Shown below are some of the common calls to the Azure Functions for creating and populating an Azure AI Search index using files uploaded to Azure Blob Storage.
 
 ### Create Index (Manual Execution)
 
@@ -185,6 +251,14 @@ To test your deployment and confirm everything is working as expected, use the [
 
 ## Functions Deep Dive
 
+### Streamlit Application Architecture
+The Streamlit application (`streamlit-semantic-kernel-app/`) uses Microsoft Semantic Kernel for AI orchestration and provides:
+
+- **Skills-based Architecture**: Modular skills for different document processing tasks
+- **Kernel Adapter**: Abstraction layer for Semantic Kernel integration
+- **Azure AI Integration**: Direct integration with Azure OpenAI, Azure AI Search, and Azure Blob Storage
+- **Intent Routing**: Automatic determination of user intent from natural language
+
 ### Orchestrators
 The project contains orchestrators tailored for specific data types:
 - `pdf_orchestrator`: Orchestrates the processing of PDF files, including chunking, extracting text & tables, generating embeddings, insertion into an Azure AI Search index, and cleanup of staged processing data.
@@ -213,5 +287,46 @@ The orchestrators utilize the following activities to perform discrete tasks:
 In addition to orchestrators and activities, the project includes standalone functions for index management which can be triggered via a HTTP request:
 - `create_new_index`: Creates a new Azure AI Search index with the specified fields.
 - `get_active_index`: Retrieves the most current Azure AI Search index based on a user-provided root name.
+
+## Project Structure
+
+```
+├── function_app.py                 # Main Azure Functions application
+├── requirements.txt               # Azure Functions dependencies
+├── host.json                     # Azure Functions host configuration
+├── local.settings.json           # Local development settings
+├── activities.py                 # Durable Functions activities
+├── ai_search_utilities.py        # Azure AI Search utilities
+├── aoai_utilities.py            # Azure OpenAI utilities
+├── chunking_utils.py            # Document chunking utilities
+├── doc_intelligence_utilities.py # Document Intelligence utilities
+├── proofreading_utilities.py    # Proofreading utilities
+├── Dockerfile                   # Container deployment configuration
+├── data_factory_pipelines/      # Azure Data Factory pipeline templates
+├── sample_data/                 # Sample documents for testing
+├── test_data/                   # Test data directory
+├── notebooks/                   # Jupyter notebooks for use case onboarding
+└── streamlit-semantic-kernel-app/ # Streamlit web interface
+    ├── src/
+    │   ├── app.py               # Main Streamlit application
+    │   ├── app_with_router.py   # Enhanced app with intent routing
+    │   ├── kernel/              # Semantic Kernel implementation
+    │   │   ├── adapter.py       # Kernel adapter for version compatibility
+    │   │   ├── config.py        # Kernel configuration
+    │   │   └── skills/          # Semantic Kernel skills
+    │   │       ├── qa_skill.py             # Q&A skill
+    │   │       ├── summarization_skill.py  # Summarization skill
+    │   │       ├── proofreading_skill.py   # Proofreading skill
+    │   │       ├── comparison_skill.py     # Document comparison skill
+    │   │       ├── semantic_router_skill.py # Rule-based intent router
+    │   │       └── llm_router_skill.py     # LLM-based intent router
+    │   └── utils/               # Utility functions
+    │       ├── helpers.py       # UI helper functions
+    │       ├── document_parser.py # Document parsing utilities
+    │       ├── file_upload.py   # File upload utilities
+    │       └── ingestion_utils.py # Ingestion workflow utilities
+    ├── requirements.txt         # Streamlit app dependencies
+    └── README.md               # Streamlit app documentation
+```
 
 ---
