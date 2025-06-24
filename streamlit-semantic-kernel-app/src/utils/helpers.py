@@ -456,10 +456,16 @@ def display_result(result, result_type):
                     summary_content = result["summary"]
                     if "detailed_summary" in summary_content:
                         detailed_summary = summary_content["detailed_summary"]
+                    elif "detailed" in summary_content:
+                        detailed_summary = summary_content["detailed"]
                     elif "Detailed Summary" in summary_content:
                         detailed_summary = summary_content["Detailed Summary"]
                 elif "detailed_summary" in result:
                     detailed_summary = result["detailed_summary"]
+                
+                # Debug output to track what we're getting
+                print(f"DEBUG: Detailed summary found: {type(detailed_summary)}")
+                print(f"DEBUG: Detailed summary content preview: {detailed_summary[:100] if isinstance(detailed_summary, str) else 'Not a string'}")
                 
                 # Default if not found
                 if detailed_summary is None:
@@ -543,6 +549,25 @@ def display_result(result, result_type):
                 
                 # Display detailed summary
                 st.subheader("Detailed Summary")
+                # Convert newlines to HTML breaks if they aren't already
+                if isinstance(detailed_summary, str):
+                    if '<br>' not in detailed_summary:
+                        detailed_summary = detailed_summary.replace('\n', '<br>')
+                    
+                    # Debug to check final content
+                    print(f"DEBUG: Final detailed summary to display: {detailed_summary[:100]}...")
+                else:
+                    # If not a string, try to convert or use a default
+                    if detailed_summary is None:
+                        detailed_summary = "No detailed summary available."
+                    else:
+                        try:
+                            detailed_summary = str(detailed_summary)
+                            if '<br>' not in detailed_summary:
+                                detailed_summary = detailed_summary.replace('\n', '<br>')
+                        except:
+                            detailed_summary = "Could not display detailed summary due to formatting issues."
+                
                 st.markdown(f"""
                 <div style='
                     background-color: rgba(0, 0, 0, 0.05); 
@@ -551,10 +576,14 @@ def display_result(result, result_type):
                     border-radius: 5px; 
                     border: 1px solid rgba(128, 128, 128, 0.2);
                     box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+                    white-space: pre-wrap;
                 '>
                     {detailed_summary}
                 </div>
                 """, unsafe_allow_html=True)
+                
+                # Debug what we've rendered
+                print(f"DEBUG: Detailed summary rendered with length {len(str(detailed_summary)) if detailed_summary else 0}")
                 
                 # Add some space
                 st.markdown("<br>", unsafe_allow_html=True)
@@ -568,9 +597,9 @@ def display_result(result, result_type):
                     topics = result["topics"]
                 elif "summary" in result and isinstance(result["summary"], dict):
                     summary_content = result["summary"]
-                    if "key_topics" in summary_content:
+                    if "key_topics" in summary_content and summary_content["key_topics"]:
                         topics = summary_content["key_topics"]
-                    elif "Key Topics/Themes" in summary_content:
+                    elif "Key Topics/Themes" in summary_content and summary_content["Key Topics/Themes"]:
                         topics = summary_content["Key Topics/Themes"]
                     # Try more potential field names for topics
                     elif any(key in summary_content for key in ["topics", "Topics", "key_themes", "Key Themes", "themes", "Themes"]):
@@ -580,10 +609,10 @@ def display_result(result, result_type):
                                 break
                 
                 # Also try root-level alternative names for topics
-                if topics is None:
+                if topics is None or not topics:
                     for field_name in ["key_topics", "Key Topics/Themes", "topics", "Topics", "key_themes", 
-                                      "Key Themes", "themes", "Themes", "main_topics", "Main Topics"]:
-                        if field_name in result:
+                                      "Key Themes", "themes", "Themes", "main_topics", "Main Topics", "key_topics_themes"]:
+                        if field_name in result and result[field_name]:
                             topics = result[field_name]
                             break
                 
@@ -660,10 +689,11 @@ def display_result(result, result_type):
                                 break
                 
                 # Also try root-level alternative names for conclusions
-                if conclusions is None:
+                if conclusions is None or not conclusions:
                     for field_name in ["takeaways", "Main Conclusions/Takeaways", "conclusions", "Conclusions",
-                                     "main_conclusions", "Main Conclusions", "key_takeaways", "Key Takeaways"]:
-                        if field_name in result:
+                                     "main_conclusions", "Main Conclusions", "key_takeaways", "Key Takeaways",
+                                     "main_conclusions_takeaways"]:
+                        if field_name in result and result[field_name]:
                             conclusions = result[field_name]
                             break
                 
